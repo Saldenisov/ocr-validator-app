@@ -305,4 +305,6 @@ def bulk_import_validated_sources(db_path: Path | None = None) -> None:
 
 
 if __name__ == "__main__":
-    bulk_import_validated_sources()
+    # Allow optional target DB path via CLI
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    bulk_import_validated_sources(target)

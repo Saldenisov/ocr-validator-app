@@ -1,5 +1,7 @@
 import math
 import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -8,7 +10,6 @@ from app.config import AVAILABLE_TABLES, get_table_paths
 from app.db_utils import load_db
 from app.import_reactions import import_single_csv_idempotent
 from app.reactions_db import ensure_db, set_validated_by_source
-from fast_populate_db import bulk_import_validated_sources as _fast_build
 
 CHUNK_SIZE = 50
 DB_FILE = Path("reactions.db")
@@ -162,11 +163,22 @@ def build_db_offline_fast(build_path: Path = Path("reactions_build.db")) -> None
     """Build a fresh DB offline using the fast importer into build_path.
 
     This does not touch the live DB file. It removes any existing build_path first.
+    Uses a subprocess to invoke the top-level script to avoid import path issues in deployments.
     """
     if build_path.exists():
         _safe_remove_db_files(build_path)
-    # Reuse fast bulk builder pointed at the build file
-    _fast_build(build_path)
+    # Compute absolute path to the repository root and the fast_populate script
+    repo_root = Path(__file__).resolve().parents[2]
+    script = repo_root / "fast_populate_db.py"
+    if not script.exists():
+        raise FileNotFoundError(f"fast_populate_db.py not found at {script}")
+    # Run the builder targeting build_path
+    cmd = [sys.executable, str(script), str(build_path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"fast_populate_db failed (exit {proc.returncode}).\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+        )
 
 def swap_live_db(build_path: Path, live_path: Path = DB_FILE, backup: bool = True, retries: int = 15, backoff_s: float = 0.25) -> None:
     """Atomically replace live DB with build DB with Windows-friendly retries.
