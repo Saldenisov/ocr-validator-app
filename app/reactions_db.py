@@ -21,6 +21,11 @@ def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
+    # Reduce 'database is locked' errors by waiting up to 5s for locks
+    try:
+        con.execute("PRAGMA busy_timeout = 5000")
+    except Exception:
+        pass
     try:
         con.execute("PRAGMA journal_mode = WAL")
     except Exception:

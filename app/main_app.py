@@ -1,5 +1,6 @@
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -207,7 +208,12 @@ if current_user == "saldenisov":
 # === BROWSE + SEARCH TABS ===
 browse_tab, search_tab = st.tabs(["📚 Browse Reactions", "🔎 Search Reactions"])
 
-con = ensure_db()
+# Optional maintenance pause to prevent DB access during swaps
+_db_paused = bool(st.session_state.get("db_paused", False))
+if _db_paused:
+    con = None
+else:
+    con = ensure_db()
 
 # --- Admin-only tools: Resync from JSON and Fast update ---
 if current_user == "saldenisov":
@@ -216,31 +222,79 @@ if current_user == "saldenisov":
         st.warning(
             "These actions will reset reactions.db. Ensure no other process is using the database before running."
         )
+        # Pause toggle
+        pause_col, _ = st.columns([1, 3])
+        with pause_col:
+            new_pause = st.checkbox("Pause DB access", value=_db_paused, help="Prevents UI from opening the DB during maintenance (avoids Windows file locks)")
+            if new_pause != _db_paused:
+                st.session_state.db_paused = new_pause
+                log_event(f"Admin: DB pause set to {new_pause}")
+                st.rerun()
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Admin: Resync from JSON", type="secondary"):
                 log_event("Admin: Resync from JSON initiated")
-                # Close current connection to avoid Windows file lock
+                # Engage pause and close our page connection to release locks before swap
+                st.session_state.db_paused = True
                 try:
-                    con.close()
+                    if 'con' in locals() and con is not None:
+                        con.close()
                 except Exception:
                     pass
                 try:
-                    from app.tools.rebuild_db import rebuild_db_from_validations
+                    from app.tools.rebuild_db import build_db_offline_fast, swap_live_db
+                    from pathlib import Path as _P
 
-                    rebuild_db_from_validations()
-                    st.success("Resync from JSON completed successfully.")
-                    log_event("Admin: Resync from JSON completed")
+                    build_path = _P("reactions_build.db")
+                    # Build offline using fast path
+                    build_db_offline_fast(build_path)
+                    # Swap into place
+                    swap_live_db(build_path)
+                    st.success("Resync from JSON completed successfully (offline build + swap).")
+                    log_event("Admin: Resync from JSON completed (offline swap)")
+                    st.session_state.db_paused = False
                     con = ensure_db()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Resync from JSON failed: {e}")
-                    log_event(f"Admin: Resync from JSON failed: {e}")
+                    # If DB is corrupted and locked, attempt legacy retry after brief wait
+                    msg = str(e)
+                    if "Failed to remove corrupted DB" in msg or "Could not remove" in msg:
+                        log_event("Admin: Resync failed due to locked/corrupted DB; retrying legacy path")
+                        time.sleep(0.5)
+                        try:
+                            from app.tools.rebuild_db import rebuild_db_from_validations
+
+                            rebuild_db_from_validations()
+                            st.success("Resync from JSON completed successfully (after retry).")
+                            log_event("Admin: Resync from JSON completed after retry")
+                            st.session_state.db_paused = False
+                            con = ensure_db()
+                            st.rerun()
+                        except Exception as e2:
+                            st.error(f"Resync from JSON failed after retry: {e2}")
+                            log_event(f"Admin: Resync from JSON failed after retry: {e2}")
+                            st.session_state.db_paused = False
+                            try:
+                                con = ensure_db()
+                            except Exception:
+                                pass
+                    else:
+                        st.error(f"Resync from JSON failed: {e}")
+                        log_event(f"Admin: Resync from JSON failed: {e}")
+                        st.session_state.db_paused = False
+                        # Make sure connection is open even on error
+                        try:
+                            con = ensure_db()
+                        except Exception:
+                            pass
         with c2:
             if st.button("Admin: Fast update", type="primary"):
                 log_event("Admin: Fast update initiated")
+                # Engage pause and close current connection to avoid Windows file lock; fast_populate recreates the DB file
+                st.session_state.db_paused = True
                 try:
-                    con.close()
+                    if 'con' in locals() and con is not None:
+                        con.close()
                 except Exception:
                     pass
                 try:
@@ -249,160 +303,171 @@ if current_user == "saldenisov":
                     bulk_import_validated_sources()
                     st.success("Fast update completed successfully.")
                     log_event("Admin: Fast update completed")
+                    st.session_state.db_paused = False
                     con = ensure_db()
                     st.rerun()
                 except Exception as e:
                     st.error(f"Fast update failed: {e}")
                     log_event(f"Admin: Fast update failed: {e}")
-
-with browse_tab:
-    left, right = st.columns([1.2, 2])
-    with left:
-        name_filter = st.text_input("Filter by name/formula", placeholder="type to filter...")
-        rows_all = list_reactions(
-            con, name_filter=name_filter or None, limit=2000, validated_only=True
-        )
-        if not rows_all:
-            st.info("No validated reactions yet.")
-        else:
-            # Pagination setup
-            PAGE_SIZE = 15
-            total = len(rows_all)
-            total_pages = max(1, math.ceil(total / PAGE_SIZE))
-            # Reset page when filter changes
-            if st.session_state.get("browse_last_filter") != (name_filter or ""):
-                st.session_state.browse_page = 0
-                st.session_state.browse_last_filter = name_filter or ""
-            page = int(st.session_state.get("browse_page", 0))
-            page = max(0, min(page, total_pages - 1))
-            start = page * PAGE_SIZE
-            end = min(start + PAGE_SIZE, total)
-            page_rows = rows_all[start:end]
-
-            # Page controls
-            pc1, pc2, pc3 = st.columns([1, 2, 1])
-            with pc1:
-                if st.button("◀ Prev", disabled=(page == 0)):
-                    log_event("Browse: Prev page")
-                    st.session_state.browse_page = max(0, page - 1)
-                    st.rerun()
-            with pc2:
-                st.write(f"Page {page + 1} / {total_pages}  ")
-            with pc3:
-                if st.button("Next ▶", disabled=(page >= total_pages - 1)):
-                    log_event("Browse: Next page")
-                    st.session_state.browse_page = min(total_pages - 1, page + 1)
-                    st.rerun()
-
-            # Build a simple list with per-row checkboxes (only Name and Formula)
-            if "browse_selected" not in st.session_state:
-                st.session_state.browse_selected = set()
-            current_selected = set(st.session_state.get("browse_selected", set()))
-            new_selected = set()
-            for r in page_rows:
-                rid = int(r["id"])
-                label_name = (r["reaction_name"] or "").strip()
-                label = f"{label_name} | {r['formula_canonical']}".strip(" |")
-                checked = st.checkbox(
-                    label, value=(rid in current_selected), key=f"browse_chk_{rid}"
-                )
-                if checked:
-                    new_selected.add(rid)
-            st.session_state.browse_selected = new_selected
-            st.session_state.selected_reaction_ids = sorted(list(new_selected))
-    with right:
-        sel_ids = st.session_state.get("selected_reaction_ids", [])
-        if not sel_ids:
-            st.info("Select one or more reactions from the table to view details.")
-        else:
-            for rid in sel_ids:
-                data = get_reaction_with_measurements(con, rid)
-                rec: Any = data.get("reaction")
-                ms = data.get("measurements", [])
-                if not rec:
-                    continue
-                with st.expander(rec["reaction_name"] or rec["formula_canonical"], expanded=False):
-                    st.markdown(f"**Table:** {rec['table_no']} ({rec['table_category']})")
-                    st.latex(rec["formula_latex"])
-                    st.code(f"Reactants: {rec['reactants']}\nProducts: {rec['products']}")
-                    if rec["notes"]:
-                        st.markdown(f"**Notes:** {rec['notes']}")
-                    # Validator metadata from DB
+                    st.session_state.db_paused = False
+                    # Reopen connection so the rest of the page doesn't break
                     try:
-                        src = rec["source_path"] or ""
-                        if src:
-                            meta = get_validation_meta_by_source(con, src)
-                            if meta.get("validated"):
-                                who = meta.get("by") or "unknown"
-                                when = meta.get("at") or "unknown time"
-                                st.markdown(f"**Validated by:** {who}  ")
-                                st.markdown(f"**Validated at:** {when}")
+                        con = ensure_db()
                     except Exception:
                         pass
-                    st.markdown("### Measurements")
-                    if not ms:
-                        st.info("No measurements recorded")
-                    else:
-                        for m in ms:
-                            ref_label = (
-                                m["doi"]
-                                and f"DOI: https://doi.org/{m['doi']}"
-                                or (m["citation_text"] or m["buxton_code"] or "")
-                            )
-                            st.markdown(
-                                f"- pH: {m['pH'] or '-'}; rate: {m['rate_value'] or '-'}; method: {m['method'] or '-'}"
-                            )
-                            if ref_label:
-                                st.markdown(f"  ↳ Reference: {ref_label}")
+
+with browse_tab:
+    if st.session_state.get("db_paused", False):
+        st.info("DB access is paused for maintenance. Resume in Admin Tools to browse.")
+    else:
+        left, right = st.columns([1.2, 2])
+        with left:
+            name_filter = st.text_input("Filter by name/formula", placeholder="type to filter...")
+            rows_all = list_reactions(
+                con, name_filter=name_filter or None, limit=2000, validated_only=True
+            )
+            if not rows_all:
+                st.info("No validated reactions yet.")
+            else:
+                # Pagination setup
+                PAGE_SIZE = 15
+                total = len(rows_all)
+                total_pages = max(1, math.ceil(total / PAGE_SIZE))
+                # Reset page when filter changes
+                if st.session_state.get("browse_last_filter") != (name_filter or ""):
+                    st.session_state.browse_page = 0
+                    st.session_state.browse_last_filter = name_filter or ""
+                page = int(st.session_state.get("browse_page", 0))
+                page = max(0, min(page, total_pages - 1))
+                start = page * PAGE_SIZE
+                end = min(start + PAGE_SIZE, total)
+                page_rows = rows_all[start:end]
+
+                # Page controls
+                pc1, pc2, pc3 = st.columns([1, 2, 1])
+                with pc1:
+                    if st.button("◀ Prev", disabled=(page == 0)):
+                        log_event("Browse: Prev page")
+                        st.session_state.browse_page = max(0, page - 1)
+                        st.rerun()
+                with pc2:
+                    st.write(f"Page {page + 1} / {total_pages}  ")
+                with pc3:
+                    if st.button("Next ▶", disabled=(page >= total_pages - 1)):
+                        log_event("Browse: Next page")
+                        st.session_state.browse_page = min(total_pages - 1, page + 1)
+                        st.rerun()
+
+                # Build a simple list with per-row checkboxes (only Name and Formula)
+                if "browse_selected" not in st.session_state:
+                    st.session_state.browse_selected = set()
+                current_selected = set(st.session_state.get("browse_selected", set()))
+                new_selected = set()
+                for r in page_rows:
+                    rid = int(r["id"])
+                    label_name = (r["reaction_name"] or "").strip()
+                    label = f"{label_name} | {r['formula_canonical']}".strip(" |")
+                    checked = st.checkbox(
+                        label, value=(rid in current_selected), key=f"browse_chk_{rid}"
+                    )
+                    if checked:
+                        new_selected.add(rid)
+                st.session_state.browse_selected = new_selected
+                st.session_state.selected_reaction_ids = sorted(list(new_selected))
+        with right:
+            sel_ids = st.session_state.get("selected_reaction_ids", [])
+            if not sel_ids:
+                st.info("Select one or more reactions from the table to view details.")
+            else:
+                for rid in sel_ids:
+                    data = get_reaction_with_measurements(con, rid)
+                    rec: Any = data.get("reaction")
+                    ms = data.get("measurements", [])
+                    if not rec:
+                        continue
+                    with st.expander(rec["reaction_name"] or rec["formula_canonical"], expanded=False):
+                        st.markdown(f"**Table:** {rec['table_no']} ({rec['table_category']})")
+                        st.latex(rec["formula_latex"])
+                        st.code(f"Reactants: {rec['reactants']}\nProducts: {rec['products']}")
+                        if rec["notes"]:
+                            st.markdown(f"**Notes:** {rec['notes']}")
+                        # Validator metadata from DB
+                        try:
+                            src = rec["source_path"] or ""
+                            if src:
+                                meta = get_validation_meta_by_source(con, src)
+                                if meta.get("validated"):
+                                    who = meta.get("by") or "unknown"
+                                    when = meta.get("at") or "unknown time"
+                                    st.markdown(f"**Validated by:** {who}  ")
+                                    st.markdown(f"**Validated at:** {when}")
+                        except Exception:
+                            pass
+                        st.markdown("### Measurements")
+                        if not ms:
+                            st.info("No measurements recorded")
+                        else:
+                            for m in ms:
+                                ref_label = (
+                                    m["doi"]
+                                    and f"DOI: https://doi.org/{m['doi']}"
+                                    or (m["citation_text"] or m["buxton_code"] or "")
+                                )
+                                st.markdown(
+                                    f"- pH: {m['pH'] or '-'}; rate: {m['rate_value'] or '-'}; method: {m['method'] or '-'}"
+                                )
+                                if ref_label:
+                                    st.markdown(f"  ↳ Reference: {ref_label}")
 
 with search_tab:
-    if current_user:
-        st.info("🔓 Authenticated Search: full access to DB and advanced filters.")
+    if st.session_state.get("db_paused", False):
+        st.info("DB access is paused for maintenance. Resume in Admin Tools to search.")
     else:
-        st.info("🌐 Public Search: basic search across reactions DB.")
-    query = st.text_input(
-        "Search reactions (text or formula)",
-        placeholder="e.g. e_aq^- OH•, hydroxyl, O2•-",
-        key="search_query",
-    )
-    max_hits = st.number_input(
-        "Max results", min_value=1, max_value=200, value=25, step=1, key="max_hits"
-    )
-    with st.expander("🔧 Advanced Search Options"):
-        table_filter = st.selectbox(
-            "Table (category)",
-            options=["All", 5, 6, 7, 8, 9],
-            key="table_filter",
-            format_func=lambda x: {
-                "All": "All",
-                5: "Table5 (water radiolysis)",
-                6: "Table6 (e_aq^-) ",
-                7: "Table7 (H•)",
-                8: "Table8 (OH•)",
-                9: "Table9 (O•−)",
-            }[x]
-            if x != "All"
-            else "All",
-        )
-    if query:
-        table_no = None if table_filter == "All" else int(table_filter)
-        try:
-            rows = search_reactions(con, query, table_no=table_no, limit=int(max_hits))
-        except Exception as e:
-            st.error(f"DB search error: {e}")
-            rows = []
-        st.write(f"Found {len(rows)} matches")
-        if rows:
-            for i, r in enumerate(rows, 1):
-                with st.expander(f"Result {i}: {r['formula_canonical']}"):
-                    st.markdown(f"**Table:** {r['table_no']} ({r['table_category']})")
-                    if r["reaction_name"]:
-                        st.markdown(f"**Name:** {r['reaction_name']}")
-                    st.latex(r["formula_latex"])
-                    st.code(f"Reactants: {r['reactants']}\nProducts: {r['products']}")
-                    if r["notes"]:
-                        st.markdown(f"**Notes:** {r['notes']}")
+        if current_user:
+            st.info("🔓 Authenticated Search: full access to DB and advanced filters.")
         else:
-            st.info("No results found. Try different search terms.")
-    else:
-        st.info("Enter a search term above to find reactions.")
+            st.info("🌐 Public Search: basic search across reactions DB.")
+        query = st.text_input(
+            "Search reactions (text or formula)",
+            placeholder="e.g. e_aq^- OH•, hydroxyl, O2•-",
+            key="search_query",
+        )
+        max_hits = st.number_input(
+            "Max results", min_value=1, max_value=200, value=25, step=1, key="max_hits"
+        )
+        with st.expander("🔧 Advanced Search Options"):
+            table_filter = st.selectbox(
+                "Table (category)",
+                options=["All", 5, 6, 7, 8, 9],
+                key="table_filter",
+                format_func=lambda x: {
+                    "All": "All",
+                    5: "Table5 (water radiolysis)",
+                    6: "Table6 (e_aq^-) ",
+                    7: "Table7 (H•)",
+                    8: "Table8 (OH•)",
+                    9: "Table9 (O•−)",
+                }[x]
+                if x != "All"
+                else "All",
+            )
+        if query:
+            table_no = None if table_filter == "All" else int(table_filter)
+            try:
+                rows = search_reactions(con, query, table_no=table_no, limit=int(max_hits))
+            except Exception as e:
+                st.error(f"DB search error: {e}")
+                rows = []
+            st.write(f"Found {len(rows)} matches")
+            if rows:
+                for i, r in enumerate(rows, 1):
+                    with st.expander(f"Result {i}: {r['formula_canonical']}"):
+                        st.markdown(f"**Table:** {r['table_no']} ({r['table_category']})")
+                        if r["reaction_name"]:
+                            st.markdown(f"**Name:** {r['reaction_name']}")
+                        st.latex(r["formula_latex"])
+                        st.code(f"Reactants: {r['reactants']}\nProducts: {r['products']}")
+                        if r["notes"]:
+                            st.markdown(f"**Notes:** {r['notes']}")
+        else:
+            st.info("Enter a search term above to find reactions.")
