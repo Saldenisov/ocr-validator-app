@@ -209,6 +209,52 @@ browse_tab, search_tab = st.tabs(["📚 Browse Reactions", "🔎 Search Reaction
 
 con = ensure_db()
 
+# --- Admin-only tools: Resync from JSON and Fast update ---
+if current_user == "saldenisov":
+    with st.expander("🛠 Admin Tools", expanded=False):
+        st.caption("Admin utilities for rebuilding the reactions database.")
+        st.warning(
+            "These actions will reset reactions.db. Ensure no other process is using the database before running."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Admin: Resync from JSON", type="secondary"):
+                log_event("Admin: Resync from JSON initiated")
+                # Close current connection to avoid Windows file lock
+                try:
+                    con.close()
+                except Exception:
+                    pass
+                try:
+                    from app.tools.rebuild_db import rebuild_db_from_validations
+
+                    rebuild_db_from_validations()
+                    st.success("Resync from JSON completed successfully.")
+                    log_event("Admin: Resync from JSON completed")
+                    con = ensure_db()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Resync from JSON failed: {e}")
+                    log_event(f"Admin: Resync from JSON failed: {e}")
+        with c2:
+            if st.button("Admin: Fast update", type="primary"):
+                log_event("Admin: Fast update initiated")
+                try:
+                    con.close()
+                except Exception:
+                    pass
+                try:
+                    from fast_populate_db import bulk_import_validated_sources
+
+                    bulk_import_validated_sources()
+                    st.success("Fast update completed successfully.")
+                    log_event("Admin: Fast update completed")
+                    con = ensure_db()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fast update failed: {e}")
+                    log_event(f"Admin: Fast update failed: {e}")
+
 with browse_tab:
     left, right = st.columns([1.2, 2])
     with left:

@@ -5,6 +5,7 @@ import csv
 import json
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 # Add app to path
@@ -37,6 +38,43 @@ def parse_rate_value_fast(raw: str) -> float | None:
         return None
 
 
+def _safe_remove_db_files(db_path: Path, retries: int = 10, backoff_s: float = 0.2) -> None:
+    """Remove SQLite DB file and sidecars (-wal, -shm) with Windows-friendly retries.
+
+    If another process is using the DB, this will retry a few times and then raise
+    a clear error telling the user which process may still be holding the lock.
+    """
+    targets = [
+        db_path,
+        Path(str(db_path) + "-wal"),
+        Path(str(db_path) + "-shm"),
+    ]
+
+    def try_unlink(p: Path) -> None:
+        if not p.exists():
+            return
+        last_err: Exception | None = None
+        for i in range(retries):
+            try:
+                p.unlink()
+                return
+            except PermissionError as e:
+                last_err = e
+                # Exponential-ish backoff: 0.2, 0.4, 0.6, ...
+                time.sleep(backoff_s * (i + 1))
+            except Exception:
+                # Other errors should break immediately
+                raise
+        # If we exhausted retries, raise with context
+        raise PermissionError(
+            f"Could not remove '{p}'. The file appears to be in use by another process. "
+            "Close any apps using the database (e.g., the running server) and try again."
+        ) from last_err
+
+    for t in targets:
+        try_unlink(t)
+
+
 def bulk_import_validated_sources() -> None:
     """Fast bulk import of all validated sources."""
     print("[FAST] Starting bulk import...")
@@ -44,20 +82,22 @@ def bulk_import_validated_sources() -> None:
     # Reset DB completely for clean slate
     db_path = Path("reactions.db")
     if db_path.exists():
-        db_path.unlink()
+        _safe_remove_db_files(db_path)
 
-    con = sqlite3.connect(str(db_path))
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    con.execute("PRAGMA journal_mode = WAL")
-    con.execute("PRAGMA synchronous = NORMAL")  # Faster than FULL
-    con.execute("PRAGMA cache_size = 10000")  # Larger cache
-    con.execute("PRAGMA temp_store = MEMORY")  # Use memory for temp
+    con = None
+    try:
+        con = sqlite3.connect(str(db_path))
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys = ON")
+        con.execute("PRAGMA journal_mode = WAL")
+        con.execute("PRAGMA synchronous = NORMAL")  # Faster than FULL
+        con.execute("PRAGMA cache_size = 10000")  # Larger cache
+        con.execute("PRAGMA temp_store = MEMORY")  # Use memory for temp
 
-    # Create schema
-    con.executescript(SCHEMA_SQL)
-    con.execute("INSERT INTO schema_migrations(name) VALUES (?)", (MIGRATION_NAME_INIT,))
-    con.commit()
+        # Create schema
+        con.executescript(SCHEMA_SQL)
+        con.execute("INSERT INTO schema_migrations(name) VALUES (?)", (MIGRATION_NAME_INIT,))
+        con.commit()
 
     # Collect all validated sources first
     sources_to_import = []
@@ -252,7 +292,9 @@ def bulk_import_validated_sources() -> None:
     vcount = con.execute("SELECT COUNT(*) FROM reactions WHERE validated = 1").fetchone()[0]
 
     print(f"[FAST] DONE! reactions={rcount}, measurements={mcount}, validated={vcount}")
-    con.close()
+    finally:
+        if con is not None:
+            con.close()
 
 
 if __name__ == "__main__":
