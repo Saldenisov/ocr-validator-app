@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    container_name: radreactions_app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./:/app
+    environment:
+      # Allow overriding BASE_DIR if your data-full is mounted externally, otherwise internal path works
+      - BASE_DIR=/app/data-full
+    # Uncomment if you need LaTeX compilation in container
+    # shm_size: '1gb'
+

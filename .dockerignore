@@ -1,0 +1,20 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.venv
+.vscode
+.idea
+data-full/**/__pycache__
+# node/npm
+node_modules
+npm-debug.log
+yarn-error.log
+# python build
+build
+dist
+*.egg-info
+# tests
+*test_*.py
