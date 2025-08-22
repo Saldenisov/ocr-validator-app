@@ -35,6 +35,9 @@ else:
             # Default to local data-full (created later) to keep paths consistent
             BASE_DIR = local_data
 
+# Ensure BASE_DIR exists on import (for uploaded data)
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def get_table_paths(table_choice):
     image_dir = BASE_DIR / table_choice / "sub_tables_images"

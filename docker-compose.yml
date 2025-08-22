@@ -6,10 +6,16 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./:/app
+      # Mount only app code for development (read-only to avoid accidental changes)
+      - ./app:/app/app:ro
+      # Persistent volume for uploaded data
+      - data:/app/data-full
     environment:
-      # Allow overriding BASE_DIR if your data-full is mounted externally, otherwise internal path works
       - BASE_DIR=/app/data-full
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
     # Uncomment if you need LaTeX compilation in container
     # shm_size: '1gb'
 
+volumes:
+  data:

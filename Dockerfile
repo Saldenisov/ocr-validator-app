@@ -43,9 +43,8 @@ WORKDIR /app
 COPY --from=fetch /src/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code and data (with LFS files materialized)
+# Copy the application code (data-full comes from uploads via admin interface)
 COPY --from=fetch /src/app /app/app
-COPY --from=fetch /src/data-full /app/data-full
 
 EXPOSE 8501
 # Use sh for POSIX-compatible parameter expansion (no need for bash in slim)
