@@ -138,7 +138,9 @@ def ensure_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
         cols_r = {row[1] for row in con.execute("PRAGMA table_info(reactions)").fetchall()}
         if "png_path" not in cols_r:
             con.execute("ALTER TABLE reactions ADD COLUMN png_path TEXT")
-            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_png_path ON reactions(png_path)")
+            con.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_png_path ON reactions(png_path)"
+            )
         if "source_path" not in cols_r:
             con.execute("ALTER TABLE reactions ADD COLUMN source_path TEXT")
         if "validated_by" not in cols_r:
@@ -499,46 +501,62 @@ def get_database_stats(con: sqlite3.Connection) -> dict[str, Any]:
     """
     totals: dict[str, Any] = {}
     # Overall counts
-    totals['reactions_total'] = int(con.execute("SELECT COUNT(*) FROM reactions").fetchone()[0])
-    totals['reactions_validated'] = int(con.execute("SELECT COUNT(*) FROM reactions WHERE validated = 1").fetchone()[0])
-    totals['reactions_unvalidated'] = totals['reactions_total'] - totals['reactions_validated']
-    totals['measurements_total'] = int(con.execute("SELECT COUNT(*) FROM measurements").fetchone()[0])
-    totals['references_total'] = int(con.execute("SELECT COUNT(*) FROM references_map").fetchone()[0])
-    totals['references_with_doi'] = int(con.execute("SELECT COUNT(*) FROM references_map WHERE doi IS NOT NULL AND TRIM(doi) <> ''").fetchone()[0])
-    totals['references_without_doi'] = totals['references_total'] - totals['references_with_doi']
+    totals["reactions_total"] = int(con.execute("SELECT COUNT(*) FROM reactions").fetchone()[0])
+    totals["reactions_validated"] = int(
+        con.execute("SELECT COUNT(*) FROM reactions WHERE validated = 1").fetchone()[0]
+    )
+    totals["reactions_unvalidated"] = totals["reactions_total"] - totals["reactions_validated"]
+    totals["measurements_total"] = int(
+        con.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
+    )
+    totals["references_total"] = int(
+        con.execute("SELECT COUNT(*) FROM references_map").fetchone()[0]
+    )
+    totals["references_with_doi"] = int(
+        con.execute(
+            "SELECT COUNT(*) FROM references_map WHERE doi IS NOT NULL AND TRIM(doi) <> ''"
+        ).fetchone()[0]
+    )
+    totals["references_without_doi"] = totals["references_total"] - totals["references_with_doi"]
 
     # Last updated timestamps
     lr = con.execute("SELECT MAX(updated_at) FROM reactions").fetchone()[0]
     lm = con.execute("SELECT MAX(updated_at) FROM measurements").fetchone()[0]
-    totals['last_reaction_updated_at'] = lr
-    totals['last_measurement_updated_at'] = lm
+    totals["last_reaction_updated_at"] = lr
+    totals["last_measurement_updated_at"] = lm
 
     # Orphan measurements (should be 0 due to FK CASCADE)
     orphan_sql = (
         "SELECT COUNT(*) FROM measurements m "
         "LEFT JOIN reactions r ON r.id = m.reaction_id WHERE r.id IS NULL"
     )
-    totals['orphan_measurements'] = int(con.execute(orphan_sql).fetchone()[0])
+    totals["orphan_measurements"] = int(con.execute(orphan_sql).fetchone()[0])
 
     # Per table stats
     per_table: list[dict[str, Any]] = []
     for tno, tcat in TABLE_CATEGORY.items():
-        row_total = con.execute("SELECT COUNT(*) FROM reactions WHERE table_no = ?", (tno,)).fetchone()[0]
-        row_val = con.execute("SELECT COUNT(*) FROM reactions WHERE table_no = ? AND validated = 1", (tno,)).fetchone()[0]
+        row_total = con.execute(
+            "SELECT COUNT(*) FROM reactions WHERE table_no = ?", (tno,)
+        ).fetchone()[0]
+        row_val = con.execute(
+            "SELECT COUNT(*) FROM reactions WHERE table_no = ? AND validated = 1", (tno,)
+        ).fetchone()[0]
         row_meas = con.execute(
             "SELECT COUNT(*) FROM measurements m JOIN reactions r ON r.id = m.reaction_id WHERE r.table_no = ?",
             (tno,),
         ).fetchone()[0]
-        per_table.append({
-            'table_no': tno,
-            'table_category': tcat,
-            'reactions_total': int(row_total),
-            'reactions_validated': int(row_val),
-            'reactions_unvalidated': int(row_total) - int(row_val),
-            'measurements_total': int(row_meas),
-        })
+        per_table.append(
+            {
+                "table_no": tno,
+                "table_category": tcat,
+                "reactions_total": int(row_total),
+                "reactions_validated": int(row_val),
+                "reactions_unvalidated": int(row_total) - int(row_val),
+                "measurements_total": int(row_meas),
+            }
+        )
 
-    return {'totals': totals, 'per_table': per_table}
+    return {"totals": totals, "per_table": per_table}
 
 
 def canonicalize_source_path(p: str) -> str:
@@ -752,27 +770,29 @@ def set_validated_by_image(
     return updated
 
 
-def get_validation_meta_bulk(con: sqlite3.Connection, source_paths: list[str]) -> dict[str, dict[str, Any]]:
+def get_validation_meta_bulk(
+    con: sqlite3.Connection, source_paths: list[str]
+) -> dict[str, dict[str, Any]]:
     """Bulk fetch validation metadata for multiple source paths efficiently.
-    
+
     Returns a dict mapping source_path -> validation_metadata.
     This is much faster than calling get_validation_meta_by_source repeatedly.
     """
     if not source_paths:
         return {}
-    
+
     result = {}
     # Canonicalize all paths first
     path_mapping = {canonicalize_source_path(p): p for p in source_paths}
     canonical_paths = list(path_mapping.keys())
-    
+
     # Bulk query for exact matches
-    placeholders = ','.join('?' * len(canonical_paths))
+    placeholders = ",".join("?" * len(canonical_paths))
     rows = con.execute(
         f"SELECT source_path, validated, validated_by, validated_at FROM reactions WHERE source_path IN ({placeholders}) ORDER BY source_path, validated DESC",
-        canonical_paths
+        canonical_paths,
     ).fetchall()
-    
+
     # Process exact matches (prefer validated=1 rows)
     found_sources = set()
     for row in rows:
@@ -780,23 +800,23 @@ def get_validation_meta_bulk(con: sqlite3.Connection, source_paths: list[str]) -
         if orig_path not in result:  # First match (highest validated due to ORDER BY)
             result[orig_path] = {"validated": bool(row[1]), "by": row[2], "at": row[3]}
             found_sources.add(orig_path)
-    
+
     # For unmatched paths, try filename fallback (batch by unique filenames)
     unmatched = [p for p in source_paths if p not in found_sources]
     if unmatched:
-        filename_to_paths = {}
+        filename_to_paths: dict[str, list[str]] = {}
         for path in unmatched:
             filename = Path(path).name
             if filename not in filename_to_paths:
                 filename_to_paths[filename] = []
             filename_to_paths[filename].append(path)
-        
+
         for filename, paths in filename_to_paths.items():
             row = con.execute(
                 "SELECT validated, validated_by, validated_at FROM reactions WHERE source_path LIKE '%' || ? ORDER BY validated DESC LIMIT 1",
                 (filename,),
             ).fetchone()
-            
+
             meta = (
                 {"validated": bool(row[0]), "by": row[1], "at": row[2]}
                 if row
@@ -804,12 +824,12 @@ def get_validation_meta_bulk(con: sqlite3.Connection, source_paths: list[str]) -
             )
             for path in paths:
                 result[path] = meta
-    
+
     # Fill in any remaining paths with default values
     for path in source_paths:
         if path not in result:
             result[path] = {"validated": False, "by": None, "at": None}
-    
+
     return result
 
 
@@ -843,27 +863,27 @@ def natural_key(s: str):
 
 def get_validation_statistics(con: sqlite3.Connection) -> dict[str, Any]:
     """Get comprehensive validation statistics from the database.
-    
+
     This reads directly from the database and reflects real-time validation status.
     Stats will update immediately when users validate/unvalidate reactions.
-    
+
     Optimized version uses bulk queries to reduce database load.
     """
     from app.config import AVAILABLE_TABLES, get_table_paths
-    
+
     def table_images(table_name):
         img_dir, _, tsv_dir, _ = get_table_paths(table_name)
         imgs = sorted([p.name for p in img_dir.glob("*.png")], key=natural_key)
         return imgs, tsv_dir
-    
+
     # Collect all source files first
     all_source_paths = []
     table_source_mapping = {}
-    
+
     for table_name in AVAILABLE_TABLES:
         imgs, tsv_dir = table_images(table_name)
         table_sources = []
-        
+
         for img in imgs:
             stem = Path(img).stem
             src_csv = tsv_dir / f"{stem}.csv"
@@ -877,47 +897,51 @@ def get_validation_statistics(con: sqlite3.Connection) -> dict[str, Any]:
                 all_source_paths.append(source_file)
                 table_sources.append((img, source_file))
             else:
-                table_sources.append((img, None))
-        
+                table_sources.append((img, ""))
+
         table_source_mapping[table_name] = (imgs, table_sources)
-    
+
     # Single bulk query for all validation metadata
     validation_cache = get_validation_meta_bulk(con, all_source_paths)
-    
+
     # Calculate statistics using cached data
     agg_total = 0
     agg_validated = 0
     table_stats = []
-    
+
     for table_name in AVAILABLE_TABLES:
         imgs, table_sources = table_source_mapping[table_name]
         table_total = len(imgs)
         table_validated = 0
-        
-        for img, source_file in table_sources:
+
+        for _img, source_file in table_sources:
             if source_file and validation_cache.get(source_file, {}).get("validated"):
                 table_validated += 1
-        
+
         table_percent = (100 * table_validated / table_total) if table_total else 0.0
-        table_stats.append({
-            "table": table_name,
-            "table_no": int(table_name.replace("table", "")),
-            "total_images": table_total,
-            "validated_images": table_validated,
-            "unvalidated_images": table_total - table_validated,
-            "validation_percentage": table_percent,
-        })
-        
+        table_stats.append(
+            {
+                "table": table_name,
+                "table_no": int(table_name.replace("table", "")),
+                "total_images": table_total,
+                "validated_images": table_validated,
+                "unvalidated_images": table_total - table_validated,
+                "validation_percentage": table_percent,
+            }
+        )
+
         agg_total += table_total
         agg_validated += table_validated
-    
+
     agg_percent = (100 * agg_validated / agg_total) if agg_total else 0.0
-    
+
     # Database-level stats
     db_total_reactions = con.execute("SELECT COUNT(*) FROM reactions").fetchone()[0]
-    db_validated_reactions = con.execute("SELECT COUNT(*) FROM reactions WHERE validated = 1").fetchone()[0]
+    db_validated_reactions = con.execute(
+        "SELECT COUNT(*) FROM reactions WHERE validated = 1"
+    ).fetchone()[0]
     db_total_measurements = con.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
-    
+
     return {
         "global": {
             "total_images": agg_total,

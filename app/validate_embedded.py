@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from app.auth_db import show_user_profile_page
 from app.config import AVAILABLE_TABLES, BASE_DIR, get_table_paths
@@ -17,6 +17,15 @@ try:
 except ImportError:
     st.error("PyMuPDF is required. Install with `pip install PyMuPDF`.")
     st.stop()
+
+
+def is_lfs_pointer(p: Path) -> bool:
+    try:
+        with p.open("rb") as f:
+            head = f.read(200)
+        return head.startswith(b"version https://git-lfs.github.com/spec/v1")
+    except Exception:
+        return False
 
 
 def show_validation_interface(current_user):
@@ -58,7 +67,9 @@ def show_validation_interface(current_user):
         options=AVAILABLE_TABLES,
         index=AVAILABLE_TABLES.index("table6") if "table6" in AVAILABLE_TABLES else 0,
     )
-    debug_mode = st.sidebar.checkbox("Enable debug logs", value=False, help="Show verbose DB operations for validation")
+    debug_mode = st.sidebar.checkbox(
+        "Enable debug logs", value=False, help="Show verbose DB operations for validation"
+    )
 
     # Compute global stats from DB across all tables (optimized with bulk queries)
     def natural_key(s: str):
@@ -70,13 +81,19 @@ def show_validation_interface(current_user):
         imgs = sorted([p.name for p in img_dir.glob("*.png")], key=natural_key)
         return imgs, tsv_dir
 
-    from app.reactions_db import ensure_db, get_validation_meta_by_image, set_validated_by_image, ensure_reaction_for_png
+    from app.reactions_db import (
+        ensure_db,
+        ensure_reaction_for_png,
+        get_validation_meta_by_image,
+        get_validation_meta_by_source,
+        set_validated_by_image,
+    )
 
     # Reuse single DB connection throughout the validation interface
     # Use the correct database path (reactions.db in the root directory)
     db_path = Path("reactions.db")
     con = ensure_db(db_path)
-    
+
     # Compute global stats: by PNG (each PNG is a reaction). CSV presence is optional.
     agg_total = 0
     agg_validated = 0
@@ -105,11 +122,11 @@ def show_validation_interface(current_user):
 
     # Determine images directly from directory; compute stats from cached validation data
     images_all = sorted([p.name for p in IMAGE_DIR.glob("*.png")], key=natural_key)
-    
+
     # Build local cache for current table - check DB for ALL images by PNG
     # Clear any existing cache to ensure we always get fresh DB state
     current_table_cache = {}
-    
+
     # Force refresh validation cache from DB on each page load
     for img in images_all:
         png_path = IMAGE_DIR / img
@@ -118,12 +135,14 @@ def show_validation_interface(current_user):
             current_table_cache[img] = meta
         except Exception:
             current_table_cache[img] = {"validated": False, "by": None, "at": None}
-    
+
     def image_meta(name: str):
         return current_table_cache.get(name, {"validated": False, "by": None, "at": None})
 
     table_total = len(images_all)
-    table_validated = sum(1 for img in images_all if current_table_cache.get(img, {}).get("validated"))
+    table_validated = sum(
+        1 for img in images_all if current_table_cache.get(img, {}).get("validated")
+    )
     table_percent = (100 * table_validated / table_total) if table_total else 0.0
 
     st.sidebar.markdown(f"### **Selected Table: {table_choice}**")
@@ -145,48 +164,48 @@ def show_validation_interface(current_user):
     PAGE_SIZE = 15
     total_images = len(images)
     total_pages = max(1, (total_images + PAGE_SIZE - 1) // PAGE_SIZE)
-    
+
     # Initialize page number and selected image
     if "page_num" not in st.session_state or st.session_state.get("table_choice") != table_choice:
         st.session_state.page_num = 0
         st.session_state.table_choice = table_choice
-    
+
     if "selected_image" not in st.session_state:
         st.session_state.selected_image = images[0] if images else None
-    
+
     # Ensure page number is valid
     if st.session_state.page_num >= total_pages:
         st.session_state.page_num = max(0, total_pages - 1)
-    
+
     current_page = st.session_state.page_num
     start_idx = current_page * PAGE_SIZE
     end_idx = min(start_idx + PAGE_SIZE, total_images)
     page_images = images[start_idx:end_idx]
-    
+
     # Page navigation controls
-    st.sidebar.markdown(f"### 📋 Image Selection Table")
+    st.sidebar.markdown("### 📋 Image Selection Table")
     page_col1, page_col2, page_col3 = st.sidebar.columns([1, 2, 1])
-    
+
     with page_col1:
         if st.button("◀ Prev Page", disabled=(current_page == 0)):
             st.session_state.page_num = max(0, current_page - 1)
             st.rerun()
-    
+
     with page_col2:
         st.write(f"Page {current_page + 1}/{total_pages}")
         st.write(f"({start_idx + 1}-{end_idx} of {total_images})")
-    
+
     with page_col3:
         if st.button("Next Page ▶", disabled=(current_page >= total_pages - 1)):
             st.session_state.page_num = min(total_pages - 1, current_page + 1)
             st.rerun()
-    
+
     # Create table data for current page
     table_data = []
     for img in page_images:
         meta = image_meta(img)
         is_validated = bool(meta.get("validated", False))
-        
+
         # Create display name with color coding
         if is_validated:
             display_name = f":green[✓ {img}]"
@@ -194,45 +213,49 @@ def show_validation_interface(current_user):
         else:
             display_name = f":red[✗ {img}]"
             status = "❌ Not Validated"
-        
-        table_data.append({
-            "Select": "",
-            "Image": display_name,
-            "Status": status,
-            "Validated By": meta.get("by", "-") if is_validated else "-",
-            "Validated At": meta.get("at", "-")[:19] if is_validated and meta.get("at") else "-"
-        })
-    
+
+        table_data.append(
+            {
+                "Select": "",
+                "Image": display_name,
+                "Status": status,
+                "Validated By": meta.get("by", "-") if is_validated else "-",
+                "Validated At": meta.get("at", "-")[:19]
+                if is_validated and meta.get("at")
+                else "-",
+            }
+        )
+
     # Display the table
     if table_data:
         st.sidebar.markdown("**Click on a row to select an image:**")
-        
+
         # Create radio buttons for selection
         selected_idx = None
         current_selected = st.session_state.get("selected_image")
-        
+
         # Find current selection index in the page
         default_idx = 0
         if current_selected in page_images:
             default_idx = page_images.index(current_selected)
-        
+
         # Radio button selection
         selected_idx = st.sidebar.radio(
             "Select image:",
             range(len(page_images)),
             index=default_idx,
             format_func=lambda x: f"{table_data[x]['Image']} | {table_data[x]['Status']}",
-            key=f"image_selector_{current_page}"
+            key=f"image_selector_{current_page}",
         )
-        
+
         if selected_idx is not None:
             st.session_state.selected_image = page_images[selected_idx]
-    
+
     current_image = st.session_state.get("selected_image")
     if not current_image or current_image not in images:
         current_image = images[0] if images else None
         st.session_state.selected_image = current_image
-    
+
     st.sidebar.markdown(f"**Currently Selected:** {current_image}")
 
     # === Validation toggle (DB is the source of truth) ===
@@ -243,12 +266,12 @@ def show_validation_interface(current_user):
     try:
         meta = get_validation_meta_by_image(con, str(png_path))
         db_meta_checked = bool(meta.get("validated", False))
-        
+
         # Debug logging for currently selected image (comment out for production)
         # print(f"[DEBUG SELECTED] {current_image} -> DB check: validated={db_meta_checked}, by={meta.get('by')}, at={meta.get('at')}")
         # print(f"[DEBUG SELECTED] Source file: {source_file}")
         # print(f"[DEBUG SELECTED] CSV exists: {csv_file.exists()}")
-    except Exception as e:
+    except Exception:
         # print(f"[DEBUG SELECTED ERROR] {current_image} -> Exception: {e}")
         db_meta_checked = False
 
@@ -292,19 +315,26 @@ def show_validation_interface(current_user):
                     if csv_file.exists():
                         try:
                             from app.import_reactions import import_single_csv_idempotent
+
                             if debug_mode:
                                 st.sidebar.write(f"[DEBUG] Importing measurements from {csv_file}")
                             rcount, mcount = import_single_csv_idempotent(csv_file, tno)
                             if debug_mode:
-                                st.sidebar.write(f"[DEBUG] Import result: reactions={rcount}, measurements={mcount}")
-                            st.sidebar.info(f"Synchronized CSV to DB: {mcount} measurements updated.")
+                                st.sidebar.write(
+                                    f"[DEBUG] Import result: reactions={rcount}, measurements={mcount}"
+                                )
+                            st.sidebar.info(
+                                f"Synchronized CSV to DB: {mcount} measurements updated."
+                            )
                         except Exception as e:
                             st.sidebar.warning(f"Auto-import failed: {e}")
                     else:
                         # Create a minimal reaction for this PNG
                         try:
                             if debug_mode:
-                                st.sidebar.write(f"[DEBUG] Ensuring minimal reaction for PNG {png_path}")
+                                st.sidebar.write(
+                                    f"[DEBUG] Ensuring minimal reaction for PNG {png_path}"
+                                )
                             rid = ensure_reaction_for_png(
                                 con,
                                 table_no=tno,
@@ -312,7 +342,9 @@ def show_validation_interface(current_user):
                                 csv_path=None,
                             )
                             if debug_mode:
-                                st.sidebar.write(f"[DEBUG] ensure_reaction_for_png -> reaction_id={rid}")
+                                st.sidebar.write(
+                                    f"[DEBUG] ensure_reaction_for_png -> reaction_id={rid}"
+                                )
                         except Exception as e:
                             if debug_mode:
                                 st.sidebar.write(f"[DEBUG] ensure_reaction_for_png failed: {e}")
@@ -340,12 +372,9 @@ def show_validation_interface(current_user):
             # print(f"[DEBUG VALIDATE] DB rows updated: {updated_count}")
             # print(f"[DEBUG VALIDATE] User: {current_user}, Timestamp: {timestamp}")
 
-            if updated_count == 0 and exists_row:
+            if updated_count == 0:
                 st.sidebar.info("No reactions were updated (already in desired state).")
-                # print(f"[DEBUG VALIDATE] WARNING: 0 rows updated but reactions exist for {source_file}")
-            elif updated_count == 0:
-                # print(f"[DEBUG VALIDATE] WARNING: 0 rows updated and no reactions exist for {source_file}")
-                pass
+                # print(f"[DEBUG VALIDATE] WARNING: 0 rows updated for PNG path {png_path}")
 
             # Verify the update worked by re-querying DB and force cache refresh
             try:
@@ -377,7 +406,11 @@ def show_validation_interface(current_user):
             # If we just validated an item and we're in "Only unvalidated" mode,
             # the item will disappear from the list, so we need to select the next unvalidated item
             if desired_state and filter_mode == "Only unvalidated":
-                remaining_unvalidated = [img for img in images_all if not current_table_cache.get(img, {}).get("validated", False)]
+                remaining_unvalidated = [
+                    img
+                    for img in images_all
+                    if not current_table_cache.get(img, {}).get("validated", False)
+                ]
                 if remaining_unvalidated:
                     st.session_state.selected_image = remaining_unvalidated[0]
                     if remaining_unvalidated[0] not in images[start_idx:end_idx]:
@@ -480,20 +513,31 @@ def show_validation_interface(current_user):
         st.header("Image Preview")
         img_path = IMAGE_DIR / current_image
         if img_path.exists():
-            st.image(Image.open(img_path), use_container_width=True)
+            try:
+                st.image(Image.open(img_path), use_container_width=True)
+            except UnidentifiedImageError:
+                if is_lfs_pointer(img_path):
+                    st.error(
+                        f"Image appears to be a Git LFS pointer and not the binary file: {img_path}. "
+                        "Enable git-lfs in your Docker build (install git-lfs and run 'git lfs fetch' + 'git lfs checkout'), or ensure images are present."
+                    )
+                else:
+                    st.error(f"Unidentified image format: {img_path}")
+            except Exception as e:
+                st.error(f"Failed to display image {img_path}: {e}")
         else:
             st.error("Image not found")
 
         st.markdown("---")
         st.header("Parsed PDF (rendered)")
-        
+
         # Check multiple possible locations for the compiled PDF
         stem = Path(current_image).stem
         possible_pdf_paths = [
             PDF_DIR / f"{stem}.pdf",  # LaTeX compilation output directory (from config)
             TSV_DIR / "latex" / f"{stem}.pdf",  # Alternative LaTeX compilation path
         ]
-        
+
         pdf_found = False
         for pdf_path in possible_pdf_paths:
             if pdf_path.exists():
@@ -507,9 +551,11 @@ def show_validation_interface(current_user):
                 except Exception as e:
                     st.warning(f"Could not display PDF {pdf_path.name}: {e}")
                     continue
-        
+
         if not pdf_found:
-            st.info("No compiled PDF found. Use 'Save and Recompile from TSV' or 'Compile from LaTeX' to generate.")
+            st.info(
+                "No compiled PDF found. Use 'Save and Recompile from TSV' or 'Compile from LaTeX' to generate."
+            )
 
     # === TSV TAB ===
     with tab2:

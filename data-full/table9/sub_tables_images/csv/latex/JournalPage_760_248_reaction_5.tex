@@ -1,0 +1,27 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage{booktabs}
+\usepackage[version=4]{mhchem}
+\usepackage{pdflscape}
+\usepackage{geometry}
+\geometry{margin=1cm}
+
+\begin{document}
+\begin{landscape}
+\begin{table}[htbp]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{lp{5cm}p{6cm}llp{8cm}l}
+\toprule
+No. & Compound name & Reaction equation & pH & \parbox{3.5cm}{\centering Rate constant\\ (L\,mol$^{-1}$\,s$^{-1}$)} & Comments & Reference \\
+\midrule
+5 & Cyanide Ion & \ce{O^{.-} + CN^- -> ^{.}C(O^-) = N^-} & ~ & $2.6 \times 10^8$ & Average of 2 values. & ~ \\
+ &  & ~ & $\sim 14$ & $2.6 \times 10^8$ & p.r.; P.b.k.; 10 mol L$^{-1}$ KOH. & 761079 \\
+ &  & ~ & 14 & $2.6 \times 10^8$ & p.r.; P.b.k. at 250 nm in N$_2$O-satd. soln. contg. 1 mol L$^{-1}$ KOH, cor. for $\cdot$OH reaction; adduct protonates and rearranges to $\cdot$CONH$_2$. & 741132 \\
+\bottomrule
+\end{tabular}
+%\caption{Kinetic data table}
+%\label{tab:kinetics}
+\end{table}
+\end{landscape}
+\end{document}
