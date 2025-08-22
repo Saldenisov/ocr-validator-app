@@ -8,10 +8,13 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      # Mount project data-full into the container (override baked data if present)
-      - "../data-full:/app/data"
+      # Mount project data-full into the container at the same path as in the image
+      # Read-only is enough for the app; remove :ro if you need writes
+      - "../data-full:/app/data-full:ro"
     environment:
-      - BASE_DIR=/app/data
+      - BASE_DIR=/app/data-full
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]

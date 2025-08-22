@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ghostscript \
     git \
     git-lfs \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 # For LaTeX compilation support (optional, heavy ~1GB+):
@@ -28,14 +29,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
-# Fetch Git LFS content if repository metadata is present
-RUN git lfs install && \
+# Configure Git and fetch Git LFS content if repository metadata is present
+RUN git config --global --add safe.directory /app && \
+    git lfs install --force && \
     if [ -d .git ]; then \
+      echo "Git directory found. Current status:" && \
+      git status --porcelain && \
+      echo "LFS files tracked:" && \
+      git lfs ls-files | head -10 && \
       echo "Fetching Git LFS objects..." && \
       git lfs fetch --all && \
-      git lfs checkout; \
+      echo "Checking out LFS files..." && \
+      git lfs checkout && \
+      echo "Verifying some PNG files exist as binaries:" && \
+      find data* -name "*.png" -type f -exec file {} \; | head -5; \
     else \
-      echo "No .git directory; skipping git LFS"; \
+      echo "No .git directory found; skipping git LFS"; \
+      echo "Directory contents:" && ls -la; \
     fi
 
 # Streamlit settings

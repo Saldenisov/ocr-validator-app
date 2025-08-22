@@ -27,34 +27,26 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy entire project including .git for LFS
 COPY . /app/
 
-# Configure Git and fetch Git LFS content to get actual image files
-RUN git config --global --add safe.directory /app && \
-    git lfs install && \
+# Configure Git and fetch Git LFS content to get actual image files (keep repository structure: app/ and data-full/ side-by-side)
+RUN set -eux; \
+    git config --global --add safe.directory /app; \
+    git lfs install; \
     if [ -d .git ]; then \
-      echo "Git directory found. Fetching LFS objects..." && \
-      git lfs fetch --all && \
-      echo "Checking out LFS files..." && \
-      git lfs checkout && \
-      echo "Verifying PNG files are binary (not pointers):" && \
-      find data* -name "*.png" -type f -exec file {} \; | head -3; \
+      echo "Git directory found. Fetching LFS objects..."; \
+      git lfs fetch --all; \
+      echo "Checking out LFS files..."; \
+      git lfs checkout; \
+      echo "Verifying PNG files are binary (not pointers) under data-full:"; \
+      find data-full -name "*.png" -type f -exec file {} \; | head -3 || true; \
     else \
       echo "No .git directory found; LFS files may remain as pointers"; \
-    fi && \
-    # Move data-full to expected location
-    if [ -d "data-full" ]; then \
-      echo "Moving data-full to /app/data" && \
-      cp -r data-full/* /app/data/ 2>/dev/null || true && \
-      echo "Data moved. Sample files:" && \
-      find /app/data -name "*.png" -type f | head -3; \
-    fi && \
-    # Ensure data directory exists
-    mkdir -p /app/data
+    fi;
 
 # Expose Streamlit port
 EXPOSE 8501
 
 # Set environment variables
-ENV BASE_DIR=/app/data
+ENV BASE_DIR=/app/data-full
 ENV PYTHONPATH=/app
 
 # Health check
