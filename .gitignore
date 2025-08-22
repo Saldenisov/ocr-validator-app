@@ -24,4 +24,4 @@ ruff_cache/
 .ipynb_checkpoints/
 
 # Data files - uploaded via admin interface
-data-full/
+data/

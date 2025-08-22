@@ -1,7 +1,7 @@
 """Admin page for uploading data ZIP files.
 
 This page allows authenticated admin users to upload ZIP files containing
-table data that will be extracted to the data-full directory.
+table data that will be extracted to the data directory.
 """
 
 import io
@@ -26,7 +26,7 @@ try:
     from app.config import BASE_DIR
 except ImportError:
     # Fallback
-    _base_dir_str = os.environ.get("BASE_DIR", "/app/data-full")
+    _base_dir_str = os.environ.get("BASE_DIR", "/app/data")
     BASE_DIR = Path(_base_dir_str)
 
 
@@ -78,6 +78,32 @@ def format_size(bytes_size: int) -> str:
     return f"{size_float:.1f} TB"
 
 
+def get_table_title(table_path: Path | str) -> str:
+    """Get table title from info.txt file, or return empty string if not found.
+
+    Args:
+        table_path: Path to the table directory
+
+    Returns:
+        Table title from info.txt if found and has format 'TITLE: Name of Table',
+        otherwise returns empty string.
+    """
+    info_file = Path(table_path) / "info.txt"
+    if not info_file.exists():
+        return ""
+
+    try:
+        content = info_file.read_text(encoding="utf-8").strip()
+        # Look for line starting with "TITLE: "
+        for line in content.split("\n"):
+            line = line.strip()
+            if line.startswith("TITLE: "):
+                return line[7:].strip()  # Remove "TITLE: " prefix
+        return ""
+    except Exception:
+        return ""
+
+
 def main():
     st.title("🔧 Admin: Upload Data")
 
@@ -121,7 +147,11 @@ def main():
                 for subdir in sorted(subdirs):
                     subdir_path = os.path.join(BASE_DIR, subdir)
                     subdir_size = get_directory_size(subdir_path)
-                    st.write(f"  • `{subdir}` ({format_size(subdir_size)})")
+                    table_title = get_table_title(subdir_path)
+                    if table_title:
+                        st.write(f"  • `{subdir}` - **{table_title}** ({format_size(subdir_size)})")
+                    else:
+                        st.write(f"  • `{subdir}` ({format_size(subdir_size)})")
         else:
             st.warning("Directory does not exist yet")
 
@@ -133,7 +163,9 @@ def main():
     st.info("""
     **Upload Instructions:**
     - Upload a ZIP file containing your table data directories
-    - The ZIP should contain folders like `table5/`, `table6/`, etc.
+    - The ZIP should contain folders like `Table5/`, `Table6/`, etc.
+    - Each table folder can optionally contain an `info.txt` file with format: `TITLE: Name of Table`
+    - If no `info.txt` file exists, the table name will be displayed without a title
     - Maximum file size: 500 MB
     - ⚠️ **Warning**: This will replace existing data in the target directory
     """)
@@ -141,7 +173,7 @@ def main():
     uploaded_file = st.file_uploader(
         "Choose a ZIP file containing table data",
         type=["zip"],
-        help="Select a ZIP file with your data-full contents",
+        help="Select a ZIP file with your data contents",
     )
 
     if uploaded_file is not None:

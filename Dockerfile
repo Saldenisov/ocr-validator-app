@@ -21,7 +21,7 @@ RUN git clone --depth=1 --branch "$REF" "$REPO" /src && \
     git lfs fetch --all && \
     git lfs checkout && \
     # Optional verification (non-fatal): ensure some PNGs are real binaries, not LFS pointers
-    (find data-full -name "*.png" -type f -exec file {} \; | head -5 || true)
+    (find data -name "*.png" -type f -exec file {} \; | head -5 || true)
 
 # 2) Runtime stage: minimal runtime with app and resolved data copied in
 FROM python:3.11-slim
@@ -43,7 +43,7 @@ WORKDIR /app
 COPY --from=fetch /src/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code (data-full comes from uploads via admin interface)
+# Copy the application code (data comes from uploads via admin interface)
 COPY --from=fetch /src/app /app/app
 
 EXPOSE 8501
