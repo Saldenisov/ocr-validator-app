@@ -1,6 +1,8 @@
+import hashlib
+import secrets
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import bcrypt
@@ -48,6 +50,17 @@ class UserAuthDB:
                     status TEXT DEFAULT 'pending',
                     processed_by TEXT,
                     processed_date TEXT
+                )
+            """)
+            
+            # Create session tokens table for persistent login
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL,
+                    token TEXT UNIQUE NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
                 )
             """)
 
@@ -507,39 +520,144 @@ class UserAuthDB:
                     )
         except Exception as e:
             return False, f"Query failed: {str(e)}", []
+    
+    def create_session_token(self, username: str) -> str:
+        """Create a session token for persistent login"""
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.now() + timedelta(days=30)).isoformat()
+        
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                # Clean up expired tokens for this user
+                cursor.execute(
+                    "DELETE FROM session_tokens WHERE username = ? OR expires_at < datetime('now')",
+                    (username,)
+                )
+                # Create new token
+                cursor.execute(
+                    "INSERT INTO session_tokens (username, token, expires_at) VALUES (?, ?, ?)",
+                    (username, token, expires_at)
+                )
+                conn.commit()
+        return token
+    
+    def validate_session_token(self, token: str) -> str | None:
+        """Validate a session token and return username if valid"""
+        if not token:
+            return None
+            
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT username FROM session_tokens WHERE token = ? AND expires_at > datetime('now')",
+                (token,)
+            )
+            result = cursor.fetchone()
+            return result[0] if result else None
+    
+    def invalidate_session_token(self, token: str):
+        """Invalidate a session token (logout)"""
+        if not token:
+            return
+            
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM session_tokens WHERE token = ?", (token,))
+                conn.commit()
+    
+    def cleanup_expired_tokens(self):
+        """Clean up expired tokens"""
+        with self.lock:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM session_tokens WHERE expires_at < datetime('now')")
+                conn.commit()
 
 
 # Initialize the database
 auth_db = UserAuthDB()
 
 
+# Cookie-based persistent authentication
+def get_session_token() -> str | None:
+    """Get session token from cookies"""
+    try:
+        # Try to get from query params first (for initial login redirect)
+        query_params = st.query_params
+        if "token" in query_params:
+            token = query_params["token"]
+            # Clear token from URL
+            st.query_params.clear()
+            return token
+            
+        # Fallback to session state (acts as cookie substitute)
+        return st.session_state.get("session_token")
+    except Exception:
+        return None
+
+def set_session_token(token: str):
+    """Set session token in cookies"""
+    st.session_state.session_token = token
+
+def clear_session_token():
+    """Clear session token from cookies"""
+    if "session_token" in st.session_state:
+        del st.session_state.session_token
+
 # Streamlit session state management functions
 def check_authentication() -> str | None:
-    """Check if user is authenticated"""
+    """Check if user is authenticated using persistent tokens"""
     # Console debug statements
     print("[AUTH DEBUG] check_authentication() called")
-    print(f"[AUTH DEBUG] Session state keys: {list(st.session_state.keys())}")
-    print(
-        f"[AUTH DEBUG] authenticated_user: {st.session_state.get('authenticated_user', 'NOT_SET')}"
-    )
-    print(
-        f"[AUTH DEBUG] authentication_status: {st.session_state.get('authentication_status', 'NOT_SET')}"
-    )
-
-    result = st.session_state.get("authenticated_user", None)
-    print(f"[AUTH DEBUG] check_authentication() returning: {result}")
-    return result
+    
+    # First check session state for quick access
+    if "authenticated_user" in st.session_state:
+        username = st.session_state.get("authenticated_user")
+        print(f"[AUTH DEBUG] Found user in session state: {username}")
+        return username
+    
+    # Check for persistent session token
+    token = get_session_token()
+    if token:
+        print(f"[AUTH DEBUG] Found session token, validating...")
+        username = auth_db.validate_session_token(token)
+        if username:
+            print(f"[AUTH DEBUG] Token valid for user: {username}")
+            # Restore session state
+            st.session_state.authenticated_user = username
+            st.session_state.authentication_status = True
+            return username
+        else:
+            print("[AUTH DEBUG] Token invalid or expired")
+            clear_session_token()
+    
+    print("[AUTH DEBUG] No valid authentication found")
+    return None
 
 
 def login_user(username: str):
-    """Log in user and set session state"""
+    """Log in user and set session state with persistent token"""
+    # Create persistent session token
+    token = auth_db.create_session_token(username)
+    set_session_token(token)
+    
+    # Set session state
     st.session_state.authenticated_user = username
     st.session_state.authentication_status = True
-    print(f"[AUTH DEBUG] User {username} logged in successfully")
+    print(f"[AUTH DEBUG] User {username} logged in successfully with persistent token")
 
 
 def logout_user():
-    """Log out user and clear session state"""
+    """Log out user and clear session state and tokens"""
+    # Invalidate persistent session token
+    token = get_session_token()
+    if token:
+        auth_db.invalidate_session_token(token)
+        clear_session_token()
+    
+    # Clear session state
     if "authenticated_user" in st.session_state:
         print(f"[AUTH DEBUG] Logging out user: {st.session_state.authenticated_user}")
         del st.session_state.authenticated_user

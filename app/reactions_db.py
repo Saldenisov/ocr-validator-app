@@ -41,38 +41,43 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Reactions: one per PNG image (a reaction). May or may not have an associated CSV.
 CREATE TABLE IF NOT EXISTS reactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   table_no INTEGER NOT NULL,
   table_category TEXT NOT NULL,
   buxton_reaction_number TEXT,
   reaction_name TEXT,
-  formula_latex TEXT NOT NULL,
-  formula_canonical TEXT NOT NULL,
-  reactants TEXT NOT NULL,
-  products TEXT NOT NULL,
+  formula_latex TEXT,
+  formula_canonical TEXT,
+  reactants TEXT,
+  products TEXT,
   reactant_species TEXT,
   product_species TEXT,
   notes TEXT,
+  png_path TEXT UNIQUE,
+  source_path TEXT, -- path to CSV if present (kept for compatibility)
   validated INTEGER NOT NULL DEFAULT 0,
   validated_by TEXT,
   validated_at TEXT,
-  source_path TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- References table (existing), augmented to store raw text from CSV when available
 CREATE TABLE IF NOT EXISTS references_map (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   buxton_code TEXT UNIQUE,
   citation_text TEXT,
   doi TEXT UNIQUE,
   doi_status TEXT NOT NULL DEFAULT 'unknown',
+  raw_text TEXT,
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Measurements: multiple per reaction (rows from CSV)
 CREATE TABLE IF NOT EXISTS measurements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   reaction_id INTEGER NOT NULL REFERENCES reactions(id) ON DELETE CASCADE,
@@ -82,9 +87,10 @@ CREATE TABLE IF NOT EXISTS measurements (
   rate_value_num REAL,
   rate_units TEXT,
   method TEXT,
-  conditions TEXT,
-  reference_id INTEGER REFERENCES references_map(id) ON DELETE SET NULL,
-  source_path TEXT,
+  conditions TEXT, -- use for comments
+  reference_id INTEGER REFERENCES references_map(id) ON DELETE SET NULL, -- first/primary ref
+  references_raw TEXT, -- full raw references field from CSV (may include many)
+  source_path TEXT, -- CSV path
   page_info TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -127,23 +133,28 @@ def ensure_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
         con.executescript(SCHEMA_SQL)
         con.execute("INSERT INTO schema_migrations(name) VALUES (?)", (MIGRATION_NAME_INIT,))
         con.commit()
-    # Lightweight migration: ensure validated_by and validated_at columns exist
+    # Lightweight migrations for added columns/indexes if DB already existed
     try:
-        cols = {row[1] for row in con.execute("PRAGMA table_info(reactions)").fetchall()}
-        to_add = []
-        if "validated_by" not in cols:
-            to_add.append("ALTER TABLE reactions ADD COLUMN validated_by TEXT")
-        if "validated_at" not in cols:
-            to_add.append("ALTER TABLE reactions ADD COLUMN validated_at TEXT")
-        for stmt in to_add:
-            try:
-                con.execute(stmt)
-            except Exception:
-                pass
-        if to_add:
-            con.commit()
+        cols_r = {row[1] for row in con.execute("PRAGMA table_info(reactions)").fetchall()}
+        if "png_path" not in cols_r:
+            con.execute("ALTER TABLE reactions ADD COLUMN png_path TEXT")
+            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_png_path ON reactions(png_path)")
+        if "source_path" not in cols_r:
+            con.execute("ALTER TABLE reactions ADD COLUMN source_path TEXT")
+        if "validated_by" not in cols_r:
+            con.execute("ALTER TABLE reactions ADD COLUMN validated_by TEXT")
+        if "validated_at" not in cols_r:
+            con.execute("ALTER TABLE reactions ADD COLUMN validated_at TEXT")
+        cols_m = {row[1] for row in con.execute("PRAGMA table_info(measurements)").fetchall()}
+        if "references_raw" not in cols_m:
+            con.execute("ALTER TABLE measurements ADD COLUMN references_raw TEXT")
+        cols_ref = {row[1] for row in con.execute("PRAGMA table_info(references_map)").fetchall()}
+        if "raw_text" not in cols_ref:
+            con.execute("ALTER TABLE references_map ADD COLUMN raw_text TEXT")
+        con.commit()
     except Exception:
         pass
+
     # Migration: update table_category strings per TABLE_CATEGORY mapping
     try:
         for tno, cat in TABLE_CATEGORY.items():
@@ -151,6 +162,25 @@ def ensure_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
         con.commit()
     except Exception:
         pass
+
+    # Ensure performance indexes exist
+    try:
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_reactions_source_path ON reactions(source_path)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_png_path ON reactions(png_path)",
+            "CREATE INDEX IF NOT EXISTS idx_reactions_validated ON reactions(validated)",
+            "CREATE INDEX IF NOT EXISTS idx_reactions_table_no ON reactions(table_no)",
+            "CREATE INDEX IF NOT EXISTS idx_measurements_reaction_source ON measurements(reaction_id, source_path)",
+        ]
+        for stmt in index_statements:
+            try:
+                con.execute(stmt)
+            except Exception:
+                pass
+        con.commit()
+    except Exception:
+        pass
+
     return con
 
 
@@ -248,24 +278,25 @@ def upsert_reference(
     buxton_code: str | None,
     citation_text: str | None,
     doi: str | None,
+    raw_text: str | None = None,
 ) -> int | None:
-    if not any([buxton_code, citation_text, doi]):
+    if not any([buxton_code, citation_text, doi, raw_text]):
         return None
     row = con.execute(
-        "SELECT id FROM references_map WHERE (buxton_code IS ? OR buxton_code = ?) OR (doi IS ? OR doi = ?) LIMIT 1",
-        (buxton_code, buxton_code, doi, doi),
+        "SELECT id FROM references_map WHERE (buxton_code IS ? OR buxton_code = ?) OR (doi IS ? OR doi = ?) OR (raw_text IS ? OR raw_text = ?) LIMIT 1",
+        (buxton_code, buxton_code, doi, doi, raw_text, raw_text),
     ).fetchone()
     if row:
         ref_id = row[0]
-        # update citation or doi if provided
+        # update fields if provided
         con.execute(
-            "UPDATE references_map SET citation_text = COALESCE(?, citation_text), doi = COALESCE(?, doi), updated_at = datetime('now') WHERE id = ?",
-            (citation_text, doi, ref_id),
+            "UPDATE references_map SET citation_text = COALESCE(?, citation_text), doi = COALESCE(?, doi), raw_text = COALESCE(?, raw_text), updated_at = datetime('now') WHERE id = ?",
+            (citation_text, doi, raw_text, ref_id),
         )
         return ref_id
     cur = con.execute(
-        "INSERT INTO references_map(buxton_code, citation_text, doi) VALUES (?,?,?)",
-        (buxton_code, citation_text, doi),
+        "INSERT INTO references_map(buxton_code, citation_text, doi, raw_text) VALUES (?,?,?,?)",
+        (buxton_code, citation_text, doi, raw_text),
     )
     return cur.lastrowid
 
@@ -276,28 +307,75 @@ def get_or_create_reaction(
     table_no: int,
     buxton_reaction_number: str | None,
     reaction_name: str | None,
-    formula_latex: str,
+    formula_latex: str | None,
     notes: str | None,
     source_path: str | None,
+    png_path: str | None,
 ) -> int:
+    """Create or update a reaction row for a given PNG (one reaction per PNG).
+
+    Deduplicate primarily by png_path. If formula is present, also compute canonical
+    representation for search and display.
+    """
     category = TABLE_CATEGORY.get(table_no, str(table_no))
-    canonical, reactants, products, r_species, p_species = latex_to_canonical(formula_latex)
-    # dedup by table_no + canonical
-    # Canonicalize source path for consistent matching with validations
+    # Canonicalize paths
     src_canon = canonicalize_source_path(source_path) if source_path else None
-    row = con.execute(
-        "SELECT id FROM reactions WHERE table_no = ? AND formula_canonical = ?",
-        (table_no, canonical),
-    ).fetchone()
+    png_canon = canonicalize_source_path(png_path) if png_path else None
+
+    # Compute canonical fields if we have a formula
+    if formula_latex:
+        canonical, reactants, products, r_species, p_species = latex_to_canonical(formula_latex)
+    else:
+        canonical, reactants, products, r_species, p_species = (None, "", "", [], [])
+
+    # Dedup ONLY by png_path (each PNG is a distinct reaction)
+    row = None
+    if png_canon:
+        row = con.execute(
+            "SELECT id FROM reactions WHERE png_path = ?",
+            (png_canon,),
+        ).fetchone()
+
     if row:
         rid = row[0]
         con.execute(
-            "UPDATE reactions SET reaction_name = COALESCE(?, reaction_name), notes = COALESCE(?, notes), source_path = COALESCE(?, source_path), updated_at = datetime('now') WHERE id = ?",
-            (reaction_name, notes, src_canon, rid),
+            """
+            UPDATE reactions
+            SET reaction_name = COALESCE(?, reaction_name),
+                formula_latex = COALESCE(?, formula_latex),
+                formula_canonical = COALESCE(?, formula_canonical),
+                reactants = COALESCE(?, reactants),
+                products = COALESCE(?, products),
+                reactant_species = COALESCE(?, reactant_species),
+                product_species = COALESCE(?, product_species),
+                notes = COALESCE(?, notes),
+                source_path = COALESCE(?, source_path),
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (
+                reaction_name,
+                formula_latex,
+                canonical,
+                reactants,
+                products,
+                json.dumps(r_species, ensure_ascii=False) if r_species else None,
+                json.dumps(p_species, ensure_ascii=False) if p_species else None,
+                notes,
+                src_canon,
+                rid,
+            ),
         )
         return rid
+
     cur = con.execute(
-        "INSERT INTO reactions(table_no, table_category, buxton_reaction_number, reaction_name, formula_latex, formula_canonical, reactants, products, reactant_species, product_species, notes, source_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        """
+        INSERT INTO reactions(
+          table_no, table_category, buxton_reaction_number, reaction_name,
+          formula_latex, formula_canonical, reactants, products,
+          reactant_species, product_species, notes, png_path, source_path
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
         (
             table_no,
             category,
@@ -307,9 +385,10 @@ def get_or_create_reaction(
             canonical,
             reactants,
             products,
-            json.dumps(r_species, ensure_ascii=False),
-            json.dumps(p_species, ensure_ascii=False),
+            json.dumps(r_species, ensure_ascii=False) if r_species else None,
+            json.dumps(p_species, ensure_ascii=False) if p_species else None,
             notes,
+            png_canon,
             src_canon,
         ),
     )
@@ -329,13 +408,17 @@ def add_measurement(
     method: str | None,
     conditions: str | None,
     reference_id: int | None,
+    references_raw: str | None,
     source_path: str | None,
     page_info: str | None,
 ) -> int:
     cur = con.execute(
         """
-        INSERT INTO measurements(reaction_id, pH, temperature_C, rate_value, rate_value_num, rate_units, method, conditions, reference_id, source_path, page_info)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO measurements(
+          reaction_id, pH, temperature_C, rate_value, rate_value_num, rate_units,
+          method, conditions, reference_id, references_raw, source_path, page_info
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             reaction_id,
@@ -347,6 +430,7 @@ def add_measurement(
             method,
             conditions,
             reference_id,
+            references_raw,
             source_path,
             page_info,
         ),
@@ -384,6 +468,79 @@ def count_reactions(con: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def get_database_stats(con: sqlite3.Connection) -> dict[str, Any]:
+    """Return overall and per-table statistics for the reactions DB.
+
+    Structure:
+      {
+        'totals': {
+            'reactions_total': int,
+            'reactions_validated': int,
+            'reactions_unvalidated': int,
+            'measurements_total': int,
+            'references_total': int,
+            'references_with_doi': int,
+            'references_without_doi': int,
+            'last_reaction_updated_at': str|None,
+            'last_measurement_updated_at': str|None,
+            'orphan_measurements': int,
+        },
+        'per_table': [
+            {
+              'table_no': int,
+              'table_category': str,
+              'reactions_total': int,
+              'reactions_validated': int,
+              'reactions_unvalidated': int,
+              'measurements_total': int
+            }, ...
+        ]
+      }
+    """
+    totals: dict[str, Any] = {}
+    # Overall counts
+    totals['reactions_total'] = int(con.execute("SELECT COUNT(*) FROM reactions").fetchone()[0])
+    totals['reactions_validated'] = int(con.execute("SELECT COUNT(*) FROM reactions WHERE validated = 1").fetchone()[0])
+    totals['reactions_unvalidated'] = totals['reactions_total'] - totals['reactions_validated']
+    totals['measurements_total'] = int(con.execute("SELECT COUNT(*) FROM measurements").fetchone()[0])
+    totals['references_total'] = int(con.execute("SELECT COUNT(*) FROM references_map").fetchone()[0])
+    totals['references_with_doi'] = int(con.execute("SELECT COUNT(*) FROM references_map WHERE doi IS NOT NULL AND TRIM(doi) <> ''").fetchone()[0])
+    totals['references_without_doi'] = totals['references_total'] - totals['references_with_doi']
+
+    # Last updated timestamps
+    lr = con.execute("SELECT MAX(updated_at) FROM reactions").fetchone()[0]
+    lm = con.execute("SELECT MAX(updated_at) FROM measurements").fetchone()[0]
+    totals['last_reaction_updated_at'] = lr
+    totals['last_measurement_updated_at'] = lm
+
+    # Orphan measurements (should be 0 due to FK CASCADE)
+    orphan_sql = (
+        "SELECT COUNT(*) FROM measurements m "
+        "LEFT JOIN reactions r ON r.id = m.reaction_id WHERE r.id IS NULL"
+    )
+    totals['orphan_measurements'] = int(con.execute(orphan_sql).fetchone()[0])
+
+    # Per table stats
+    per_table: list[dict[str, Any]] = []
+    for tno, tcat in TABLE_CATEGORY.items():
+        row_total = con.execute("SELECT COUNT(*) FROM reactions WHERE table_no = ?", (tno,)).fetchone()[0]
+        row_val = con.execute("SELECT COUNT(*) FROM reactions WHERE table_no = ? AND validated = 1", (tno,)).fetchone()[0]
+        row_meas = con.execute(
+            "SELECT COUNT(*) FROM measurements m JOIN reactions r ON r.id = m.reaction_id WHERE r.table_no = ?",
+            (tno,),
+        ).fetchone()[0]
+        per_table.append({
+            'table_no': tno,
+            'table_category': tcat,
+            'reactions_total': int(row_total),
+            'reactions_validated': int(row_val),
+            'reactions_unvalidated': int(row_total) - int(row_val),
+            'measurements_total': int(row_meas),
+        })
+
+    return {'totals': totals, 'per_table': per_table}
+
+
 def canonicalize_source_path(p: str) -> str:
     try:
         base = Path(BASE_DIR).resolve()
@@ -407,7 +564,7 @@ def set_validated_by_source(
 ) -> int:
     """Set validated flag and metadata for all reactions from a given source path.
 
-    Tries to match by canonical relative path; if nothing updated, falls back to matching by filename.
+    Tries to match by canonical relative path; if nothing updated, falls back to filename match.
     If validated is True, set validated_by and validated_at; if False, clear them.
     Returns number of rows updated.
     """
@@ -440,6 +597,26 @@ def set_validated_by_source(
         updated = cur.rowcount
     con.commit()
     return updated
+
+
+def delete_reactions_by_source(
+    con: sqlite3.Connection,
+    source_path: str,
+) -> int:
+    """Delete reactions (and cascading measurements) for a given source path.
+
+    Matches by canonical relative path; if 0 deleted, falls back to filename suffix match.
+    Returns number of reaction rows deleted.
+    """
+    src_canon = canonicalize_source_path(source_path)
+    cur = con.execute("DELETE FROM reactions WHERE source_path = ?", (src_canon,))
+    deleted = cur.rowcount
+    if deleted == 0:
+        filename = Path(source_path).name
+        cur = con.execute("DELETE FROM reactions WHERE source_path LIKE '%' || ?", (filename,))
+        deleted = cur.rowcount
+    con.commit()
+    return deleted
 
 
 def list_reactions(
@@ -518,3 +695,241 @@ def get_validation_meta_by_source(con: sqlite3.Connection, source_path: str) -> 
     if not row:
         return {"validated": False, "by": None, "at": None}
     return {"validated": bool(row[0]), "by": row[1], "at": row[2]}
+
+
+def get_validation_meta_by_image(con: sqlite3.Connection, png_path: str) -> dict[str, Any]:
+    """Return {'validated': bool, 'by': str|None, 'at': str|None} for a given PNG path."""
+    src_canon = canonicalize_source_path(png_path)
+    row = con.execute(
+        "SELECT validated, validated_by, validated_at FROM reactions WHERE png_path = ? ORDER BY validated DESC LIMIT 1",
+        (src_canon,),
+    ).fetchone()
+    if not row:
+        filename = Path(png_path).name
+        row = con.execute(
+            "SELECT validated, validated_by, validated_at FROM reactions WHERE png_path LIKE '%' || ? ORDER BY validated DESC LIMIT 1",
+            (filename,),
+        ).fetchone()
+    if not row:
+        return {"validated": False, "by": None, "at": None}
+    return {"validated": bool(row[0]), "by": row[1], "at": row[2]}
+
+
+def set_validated_by_image(
+    con: sqlite3.Connection,
+    png_path: str,
+    validated: bool,
+    *,
+    by: str | None = None,
+    at_iso: str | None = None,
+) -> int:
+    src_canon = canonicalize_source_path(png_path)
+    if validated:
+        cur = con.execute(
+            "UPDATE reactions SET validated = 1, validated_by = ?, validated_at = ?, updated_at = datetime('now') WHERE png_path = ?",
+            (by, at_iso, src_canon),
+        )
+    else:
+        cur = con.execute(
+            "UPDATE reactions SET validated = 0, validated_by = NULL, validated_at = NULL, updated_at = datetime('now') WHERE png_path = ?",
+            (src_canon,),
+        )
+    updated = cur.rowcount
+    if updated == 0:
+        filename = Path(png_path).name
+        if validated:
+            cur = con.execute(
+                "UPDATE reactions SET validated = 1, validated_by = ?, validated_at = ?, updated_at = datetime('now') WHERE png_path LIKE '%' || ?",
+                (by, at_iso, filename),
+            )
+        else:
+            cur = con.execute(
+                "UPDATE reactions SET validated = 0, validated_by = NULL, validated_at = NULL, updated_at = datetime('now') WHERE png_path LIKE '%' || ?",
+                (filename,),
+            )
+        updated = cur.rowcount
+    con.commit()
+    return updated
+
+
+def get_validation_meta_bulk(con: sqlite3.Connection, source_paths: list[str]) -> dict[str, dict[str, Any]]:
+    """Bulk fetch validation metadata for multiple source paths efficiently.
+    
+    Returns a dict mapping source_path -> validation_metadata.
+    This is much faster than calling get_validation_meta_by_source repeatedly.
+    """
+    if not source_paths:
+        return {}
+    
+    result = {}
+    # Canonicalize all paths first
+    path_mapping = {canonicalize_source_path(p): p for p in source_paths}
+    canonical_paths = list(path_mapping.keys())
+    
+    # Bulk query for exact matches
+    placeholders = ','.join('?' * len(canonical_paths))
+    rows = con.execute(
+        f"SELECT source_path, validated, validated_by, validated_at FROM reactions WHERE source_path IN ({placeholders}) ORDER BY source_path, validated DESC",
+        canonical_paths
+    ).fetchall()
+    
+    # Process exact matches (prefer validated=1 rows)
+    found_sources = set()
+    for row in rows:
+        orig_path = path_mapping[row[0]]
+        if orig_path not in result:  # First match (highest validated due to ORDER BY)
+            result[orig_path] = {"validated": bool(row[1]), "by": row[2], "at": row[3]}
+            found_sources.add(orig_path)
+    
+    # For unmatched paths, try filename fallback (batch by unique filenames)
+    unmatched = [p for p in source_paths if p not in found_sources]
+    if unmatched:
+        filename_to_paths = {}
+        for path in unmatched:
+            filename = Path(path).name
+            if filename not in filename_to_paths:
+                filename_to_paths[filename] = []
+            filename_to_paths[filename].append(path)
+        
+        for filename, paths in filename_to_paths.items():
+            row = con.execute(
+                "SELECT validated, validated_by, validated_at FROM reactions WHERE source_path LIKE '%' || ? ORDER BY validated DESC LIMIT 1",
+                (filename,),
+            ).fetchone()
+            
+            meta = (
+                {"validated": bool(row[0]), "by": row[1], "at": row[2]}
+                if row
+                else {"validated": False, "by": None, "at": None}
+            )
+            for path in paths:
+                result[path] = meta
+    
+    # Fill in any remaining paths with default values
+    for path in source_paths:
+        if path not in result:
+            result[path] = {"validated": False, "by": None, "at": None}
+    
+    return result
+
+
+def ensure_reaction_for_png(
+    con: sqlite3.Connection,
+    *,
+    table_no: int,
+    png_path: str,
+    csv_path: str | None = None,
+    buxton_reaction_number: str | None = None,
+    reaction_name: str | None = None,
+    formula_latex: str | None = None,
+) -> int:
+    """Ensure a reaction row exists for a given PNG, creating a minimal one if needed."""
+    return get_or_create_reaction(
+        con,
+        table_no=table_no,
+        buxton_reaction_number=buxton_reaction_number,
+        reaction_name=reaction_name,
+        formula_latex=formula_latex,
+        notes=None,
+        source_path=csv_path,
+        png_path=png_path,
+    )
+
+
+def natural_key(s: str):
+    """Natural sort: split digits and non-digits so 'img2.png' < 'img10.png'"""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+
+def get_validation_statistics(con: sqlite3.Connection) -> dict[str, Any]:
+    """Get comprehensive validation statistics from the database.
+    
+    This reads directly from the database and reflects real-time validation status.
+    Stats will update immediately when users validate/unvalidate reactions.
+    
+    Optimized version uses bulk queries to reduce database load.
+    """
+    from app.config import AVAILABLE_TABLES, get_table_paths
+    
+    def table_images(table_name):
+        img_dir, _, tsv_dir, _ = get_table_paths(table_name)
+        imgs = sorted([p.name for p in img_dir.glob("*.png")], key=natural_key)
+        return imgs, tsv_dir
+    
+    # Collect all source files first
+    all_source_paths = []
+    table_source_mapping = {}
+    
+    for table_name in AVAILABLE_TABLES:
+        imgs, tsv_dir = table_images(table_name)
+        table_sources = []
+        
+        for img in imgs:
+            stem = Path(img).stem
+            src_csv = tsv_dir / f"{stem}.csv"
+            src_tsv = tsv_dir / f"{stem}.tsv"
+            source_file = (
+                str(src_csv if src_csv.exists() else src_tsv)
+                if (src_csv.exists() or src_tsv.exists())
+                else None
+            )
+            if source_file:
+                all_source_paths.append(source_file)
+                table_sources.append((img, source_file))
+            else:
+                table_sources.append((img, None))
+        
+        table_source_mapping[table_name] = (imgs, table_sources)
+    
+    # Single bulk query for all validation metadata
+    validation_cache = get_validation_meta_bulk(con, all_source_paths)
+    
+    # Calculate statistics using cached data
+    agg_total = 0
+    agg_validated = 0
+    table_stats = []
+    
+    for table_name in AVAILABLE_TABLES:
+        imgs, table_sources = table_source_mapping[table_name]
+        table_total = len(imgs)
+        table_validated = 0
+        
+        for img, source_file in table_sources:
+            if source_file and validation_cache.get(source_file, {}).get("validated"):
+                table_validated += 1
+        
+        table_percent = (100 * table_validated / table_total) if table_total else 0.0
+        table_stats.append({
+            "table": table_name,
+            "table_no": int(table_name.replace("table", "")),
+            "total_images": table_total,
+            "validated_images": table_validated,
+            "unvalidated_images": table_total - table_validated,
+            "validation_percentage": table_percent,
+        })
+        
+        agg_total += table_total
+        agg_validated += table_validated
+    
+    agg_percent = (100 * agg_validated / agg_total) if agg_total else 0.0
+    
+    # Database-level stats
+    db_total_reactions = con.execute("SELECT COUNT(*) FROM reactions").fetchone()[0]
+    db_validated_reactions = con.execute("SELECT COUNT(*) FROM reactions WHERE validated = 1").fetchone()[0]
+    db_total_measurements = con.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
+    
+    return {
+        "global": {
+            "total_images": agg_total,
+            "validated_images": agg_validated,
+            "unvalidated_images": agg_total - agg_validated,
+            "validation_percentage": agg_percent,
+        },
+        "database": {
+            "total_reactions": db_total_reactions,
+            "validated_reactions": db_validated_reactions,
+            "unvalidated_reactions": db_total_reactions - db_validated_reactions,
+            "total_measurements": db_total_measurements,
+        },
+        "tables": table_stats,
+    }

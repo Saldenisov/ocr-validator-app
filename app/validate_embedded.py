@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -57,34 +58,37 @@ def show_validation_interface(current_user):
         options=AVAILABLE_TABLES,
         index=AVAILABLE_TABLES.index("table6") if "table6" in AVAILABLE_TABLES else 0,
     )
+    debug_mode = st.sidebar.checkbox("Enable debug logs", value=False, help="Show verbose DB operations for validation")
 
-    # Compute global stats from DB across all tables
+    # Compute global stats from DB across all tables (optimized with bulk queries)
+    def natural_key(s: str):
+        # Natural sort: split digits and non-digits so 'img2.png' < 'img10.png'
+        return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
     def table_images(table_name):
         img_dir, _, tsv_dir, _ = get_table_paths(table_name)
-        imgs = sorted([p.name for p in img_dir.glob("*.png")])
+        imgs = sorted([p.name for p in img_dir.glob("*.png")], key=natural_key)
         return imgs, tsv_dir
 
-    from app.reactions_db import ensure_db, get_validation_meta_by_source
+    from app.reactions_db import ensure_db, get_validation_meta_by_image, set_validated_by_image, ensure_reaction_for_png
 
-    con = ensure_db()
+    # Reuse single DB connection throughout the validation interface
+    # Use the correct database path (reactions.db in the root directory)
+    db_path = Path("reactions.db")
+    con = ensure_db(db_path)
+    
+    # Compute global stats: by PNG (each PNG is a reaction). CSV presence is optional.
     agg_total = 0
     agg_validated = 0
     for t in AVAILABLE_TABLES:
-        imgs, tsv_dir = table_images(t)
+        img_dir, _, _, _ = get_table_paths(t)
+        imgs = sorted([p.name for p in img_dir.glob("*.png")], key=natural_key)
         agg_total += len(imgs)
         for img in imgs:
-            stem = Path(img).stem
-            src_csv = tsv_dir / f"{stem}.csv"
-            src_tsv = tsv_dir / f"{stem}.tsv"
-            source_file = (
-                str(src_csv if src_csv.exists() else src_tsv)
-                if (src_csv.exists() or src_tsv.exists())
-                else None
-            )
-            if source_file:
-                meta = get_validation_meta_by_source(con, source_file)
-                if meta.get("validated"):
-                    agg_validated += 1
+            png_path = img_dir / img
+            meta = get_validation_meta_by_image(con, str(png_path))
+            if meta.get("validated"):
+                agg_validated += 1
     agg_percent = (100 * agg_validated / agg_total) if agg_total else 0.0
 
     st.sidebar.markdown("### **All Tables (Global Stats)**")
@@ -99,28 +103,27 @@ def show_validation_interface(current_user):
     st.sidebar.markdown(f"IMAGE_DIR exists: {IMAGE_DIR.exists()}")
     st.sidebar.markdown(f"IMAGE_DIR: {IMAGE_DIR}")
 
-    # Determine images directly from directory; compute stats from DB
-    images_all = sorted([p.name for p in IMAGE_DIR.glob("*.png")])
-
-    from app.reactions_db import get_validation_meta_by_source
-
-    con = ensure_db()
-
+    # Determine images directly from directory; compute stats from cached validation data
+    images_all = sorted([p.name for p in IMAGE_DIR.glob("*.png")], key=natural_key)
+    
+    # Build local cache for current table - check DB for ALL images by PNG
+    # Clear any existing cache to ensure we always get fresh DB state
+    current_table_cache = {}
+    
+    # Force refresh validation cache from DB on each page load
+    for img in images_all:
+        png_path = IMAGE_DIR / img
+        try:
+            meta = get_validation_meta_by_image(con, str(png_path))
+            current_table_cache[img] = meta
+        except Exception:
+            current_table_cache[img] = {"validated": False, "by": None, "at": None}
+    
     def image_meta(name: str):
-        stem = Path(name).stem
-        src_csv = TSV_DIR / f"{stem}.csv"
-        src_tsv = TSV_DIR / f"{stem}.tsv"
-        source_file = (
-            str(src_csv if src_csv.exists() else src_tsv)
-            if (src_csv.exists() or src_tsv.exists())
-            else None
-        )
-        if not source_file:
-            return {"validated": False, "by": None, "at": None}
-        return get_validation_meta_by_source(con, source_file)
+        return current_table_cache.get(name, {"validated": False, "by": None, "at": None})
 
     table_total = len(images_all)
-    table_validated = sum(1 for img in images_all if image_meta(img).get("validated"))
+    table_validated = sum(1 for img in images_all if current_table_cache.get(img, {}).get("validated"))
     table_percent = (100 * table_validated / table_total) if table_total else 0.0
 
     st.sidebar.markdown(f"### **Selected Table: {table_choice}**")
@@ -138,98 +141,249 @@ def show_validation_interface(current_user):
         st.sidebar.warning("No images to display for this filter.")
         st.stop()
 
-    # === Navigation logic ===
-    if "idx" not in st.session_state or st.session_state.get("table_choice") != table_choice:
-        st.session_state.idx = 0
-        st.session_state.table_choice = table_choice  # reset idx on table change
-
-    if st.session_state.idx >= len(images):
-        st.session_state.idx = 0
-    prev, nxt = st.sidebar.columns(2)
-    with prev:
-        if st.button("Previous"):
-            st.session_state.idx = max(0, st.session_state.idx - 1)
-    with nxt:
-        if st.button("Next"):
-            st.session_state.idx = min(len(images) - 1, st.session_state.idx + 1)
-    st.sidebar.number_input("Image Index", 0, len(images) - 1, st.session_state.idx, key="idx")
-
-    current_image = images[st.session_state.idx]
-    st.sidebar.markdown(f"**Current:** {current_image}")
+    # === Navigation logic with table pagination ===
+    PAGE_SIZE = 15
+    total_images = len(images)
+    total_pages = max(1, (total_images + PAGE_SIZE - 1) // PAGE_SIZE)
+    
+    # Initialize page number and selected image
+    if "page_num" not in st.session_state or st.session_state.get("table_choice") != table_choice:
+        st.session_state.page_num = 0
+        st.session_state.table_choice = table_choice
+    
+    if "selected_image" not in st.session_state:
+        st.session_state.selected_image = images[0] if images else None
+    
+    # Ensure page number is valid
+    if st.session_state.page_num >= total_pages:
+        st.session_state.page_num = max(0, total_pages - 1)
+    
+    current_page = st.session_state.page_num
+    start_idx = current_page * PAGE_SIZE
+    end_idx = min(start_idx + PAGE_SIZE, total_images)
+    page_images = images[start_idx:end_idx]
+    
+    # Page navigation controls
+    st.sidebar.markdown(f"### 📋 Image Selection Table")
+    page_col1, page_col2, page_col3 = st.sidebar.columns([1, 2, 1])
+    
+    with page_col1:
+        if st.button("◀ Prev Page", disabled=(current_page == 0)):
+            st.session_state.page_num = max(0, current_page - 1)
+            st.rerun()
+    
+    with page_col2:
+        st.write(f"Page {current_page + 1}/{total_pages}")
+        st.write(f"({start_idx + 1}-{end_idx} of {total_images})")
+    
+    with page_col3:
+        if st.button("Next Page ▶", disabled=(current_page >= total_pages - 1)):
+            st.session_state.page_num = min(total_pages - 1, current_page + 1)
+            st.rerun()
+    
+    # Create table data for current page
+    table_data = []
+    for img in page_images:
+        meta = image_meta(img)
+        is_validated = bool(meta.get("validated", False))
+        
+        # Create display name with color coding
+        if is_validated:
+            display_name = f":green[✓ {img}]"
+            status = "✅ Validated"
+        else:
+            display_name = f":red[✗ {img}]"
+            status = "❌ Not Validated"
+        
+        table_data.append({
+            "Select": "",
+            "Image": display_name,
+            "Status": status,
+            "Validated By": meta.get("by", "-") if is_validated else "-",
+            "Validated At": meta.get("at", "-")[:19] if is_validated and meta.get("at") else "-"
+        })
+    
+    # Display the table
+    if table_data:
+        st.sidebar.markdown("**Click on a row to select an image:**")
+        
+        # Create radio buttons for selection
+        selected_idx = None
+        current_selected = st.session_state.get("selected_image")
+        
+        # Find current selection index in the page
+        default_idx = 0
+        if current_selected in page_images:
+            default_idx = page_images.index(current_selected)
+        
+        # Radio button selection
+        selected_idx = st.sidebar.radio(
+            "Select image:",
+            range(len(page_images)),
+            index=default_idx,
+            format_func=lambda x: f"{table_data[x]['Image']} | {table_data[x]['Status']}",
+            key=f"image_selector_{current_page}"
+        )
+        
+        if selected_idx is not None:
+            st.session_state.selected_image = page_images[selected_idx]
+    
+    current_image = st.session_state.get("selected_image")
+    if not current_image or current_image not in images:
+        current_image = images[0] if images else None
+        st.session_state.selected_image = current_image
+    
+    st.sidebar.markdown(f"**Currently Selected:** {current_image}")
 
     # === Validation toggle (DB is the source of truth) ===
-    # Read current status from DB metadata derived from any existing TSV/CSV source
-    stem = Path(current_image).stem
-    csv_candidate = TSV_DIR / f"{stem}.csv"
-    tsv_candidate = TSV_DIR / f"{stem}.tsv"
-    source_file = (
-        str(csv_candidate if csv_candidate.exists() else tsv_candidate)
-        if (csv_candidate.exists() or tsv_candidate.exists())
-        else None
-    )
+    # Read current status from DB for the selected image by PNG
+    png_path = IMAGE_DIR / current_image
 
     db_meta_checked = False
-    if source_file:
-        try:
-            from app.reactions_db import ensure_db, get_validation_meta_by_source
+    try:
+        meta = get_validation_meta_by_image(con, str(png_path))
+        db_meta_checked = bool(meta.get("validated", False))
+        
+        # Debug logging for currently selected image (comment out for production)
+        # print(f"[DEBUG SELECTED] {current_image} -> DB check: validated={db_meta_checked}, by={meta.get('by')}, at={meta.get('at')}")
+        # print(f"[DEBUG SELECTED] Source file: {source_file}")
+        # print(f"[DEBUG SELECTED] CSV exists: {csv_file.exists()}")
+    except Exception as e:
+        # print(f"[DEBUG SELECTED ERROR] {current_image} -> Exception: {e}")
+        db_meta_checked = False
 
-            con = ensure_db()
-            meta = get_validation_meta_by_source(con, source_file)
-            db_meta_checked = bool(meta.get("validated", False))
-        except Exception:
-            db_meta_checked = False
+    # Show current status and action buttons instead of a checkbox
+    status_text = "✅ Validated" if db_meta_checked else "❌ Not Validated"
+    st.sidebar.markdown(f"**Status:** {status_text}")
+    act_col1, act_col2 = st.sidebar.columns(2)
+    do_validate = False
+    do_unvalidate = False
+    with act_col1:
+        if st.button("Validate", key=f"btn_validate_{table_choice}_{current_image}"):
+            do_validate = True
+    with act_col2:
+        if st.button("Unvalidate", key=f"btn_unvalidate_{table_choice}_{current_image}"):
+            do_unvalidate = True
 
-    validated = st.sidebar.checkbox(
-        "Validated",
-        value=db_meta_checked,
-        key=f"validated_{table_choice}_{current_image}",
-    )
+    desired_state = None
+    if do_validate:
+        desired_state = True
+    elif do_unvalidate:
+        desired_state = False
 
-    if validated != db_meta_checked:
+    if desired_state is not None and desired_state != db_meta_checked:
         # Ensure reactions for this source are present; if not, import
         try:
-            from app.reactions_db import ensure_db, set_validated_by_source
+            from app.reactions_db import ensure_db
 
-            con = ensure_db()
-            if not source_file:
-                # Prefer to create a TSV path so we can track source
-                source_candidate = TSV_DIR / f"{stem}.tsv"
-                source_candidate.parent.mkdir(parents=True, exist_ok=True)
-                source_file = str(source_candidate)
-                if not source_candidate.exists():
-                    source_candidate.write_text("", encoding="utf-8")
-            # If there are no reactions yet for this source, import them now (if csv/tsv has content)
+            con = ensure_db(db_path)
+
+            # Ensure a reaction row exists for this PNG; attempt to import CSV if present
             try:
-                exists = con.execute(
-                    "SELECT 1 FROM reactions WHERE source_path = ? LIMIT 1",
-                    (source_file,),
-                ).fetchone()
-            except Exception:
-                exists = None
-            if not exists:
-                try:
-                    from app.import_reactions import import_single_csv_idempotent
+                tno = (
+                    int(table_choice.replace("table", ""))
+                    if table_choice.startswith("table")
+                    else None
+                )
+                stem = Path(current_image).stem
+                csv_file = TSV_DIR / f"{stem}.csv"
+                rid = None
+                if tno is not None:
+                    if csv_file.exists():
+                        try:
+                            from app.import_reactions import import_single_csv_idempotent
+                            if debug_mode:
+                                st.sidebar.write(f"[DEBUG] Importing measurements from {csv_file}")
+                            rcount, mcount = import_single_csv_idempotent(csv_file, tno)
+                            if debug_mode:
+                                st.sidebar.write(f"[DEBUG] Import result: reactions={rcount}, measurements={mcount}")
+                            st.sidebar.info(f"Synchronized CSV to DB: {mcount} measurements updated.")
+                        except Exception as e:
+                            st.sidebar.warning(f"Auto-import failed: {e}")
+                    else:
+                        # Create a minimal reaction for this PNG
+                        try:
+                            if debug_mode:
+                                st.sidebar.write(f"[DEBUG] Ensuring minimal reaction for PNG {png_path}")
+                            rid = ensure_reaction_for_png(
+                                con,
+                                table_no=tno,
+                                png_path=str(png_path),
+                                csv_path=None,
+                            )
+                            if debug_mode:
+                                st.sidebar.write(f"[DEBUG] ensure_reaction_for_png -> reaction_id={rid}")
+                        except Exception as e:
+                            if debug_mode:
+                                st.sidebar.write(f"[DEBUG] ensure_reaction_for_png failed: {e}")
+                            pass
+            except Exception as e:
+                if debug_mode:
+                    st.sidebar.write(f"[DEBUG] Pre-validation ensure step failed: {e}")
+                pass
 
-                    tno = (
-                        int(table_choice.replace("table", ""))
-                        if table_choice.startswith("table")
-                        else None
-                    )
-                    if tno:
-                        rcount, mcount = import_single_csv_idempotent(Path(source_file), tno)
-                        st.sidebar.info(f"Synchronized TSV to DB: {mcount} measurements updated.")
-                except Exception as e:
-                    st.sidebar.warning(f"Auto-import failed: {e}")
-            # Update DB validation state with metadata
-            updated = set_validated_by_source(
+            # Update DB validation state with metadata by PNG path
+            timestamp = datetime.now().isoformat() if desired_state else None
+            updated_count = set_validated_by_image(
                 con,
-                source_file,
-                validated,
-                by=current_user if validated else None,
-                at_iso=datetime.now().isoformat() if validated else None,
+                str(png_path),
+                desired_state,
+                by=current_user if desired_state else None,
+                at_iso=timestamp,
             )
-            if updated == 0 and exists:
+            if debug_mode:
+                st.sidebar.write(f"[DEBUG] set_validated_by_image updated_rows={updated_count}")
+
+            # Debug validation process (uncomment for debugging)
+            # print(f"[DEBUG VALIDATE] Action: {'VALIDATE' if desired_state else 'UNVALIDATE'} for {current_image}")
+            # print(f"[DEBUG VALIDATE] Source file: {source_file}")
+            # print(f"[DEBUG VALIDATE] DB rows updated: {updated_count}")
+            # print(f"[DEBUG VALIDATE] User: {current_user}, Timestamp: {timestamp}")
+
+            if updated_count == 0 and exists_row:
                 st.sidebar.info("No reactions were updated (already in desired state).")
+                # print(f"[DEBUG VALIDATE] WARNING: 0 rows updated but reactions exist for {source_file}")
+            elif updated_count == 0:
+                # print(f"[DEBUG VALIDATE] WARNING: 0 rows updated and no reactions exist for {source_file}")
+                pass
+
+            # Verify the update worked by re-querying DB and force cache refresh
+            try:
+                verify_meta = get_validation_meta_by_image(con, str(png_path))
+                if debug_mode:
+                    st.sidebar.write(f"[DEBUG] Verified meta after update: {verify_meta}")
+                # Use the verified meta instead of our constructed meta
+                new_meta = verify_meta
+            except Exception as e:
+                if debug_mode:
+                    st.sidebar.write(f"[DEBUG] DB verification failed: {e}")
+                # Fallback to constructed meta
+                new_meta = {
+                    "validated": bool(desired_state),
+                    "by": current_user if desired_state else None,
+                    "at": timestamp,
+                }
+
+            # Update local caches with verified DB state
+            try:
+                current_table_cache[current_image] = new_meta
+                if debug_mode:
+                    st.sidebar.write(f"[DEBUG] Cache updated for {current_image}: {new_meta}")
+            except Exception as e:
+                if debug_mode:
+                    st.sidebar.write(f"[DEBUG] Cache update failed: {e}")
+                pass
+
+            # If we just validated an item and we're in "Only unvalidated" mode,
+            # the item will disappear from the list, so we need to select the next unvalidated item
+            if desired_state and filter_mode == "Only unvalidated":
+                remaining_unvalidated = [img for img in images_all if not current_table_cache.get(img, {}).get("validated", False)]
+                if remaining_unvalidated:
+                    st.session_state.selected_image = remaining_unvalidated[0]
+                    if remaining_unvalidated[0] not in images[start_idx:end_idx]:
+                        st.session_state.page_num = 0
+
+            st.rerun()
         except Exception as e:
             st.sidebar.warning(f"Validation sync failed: {e}")
 
@@ -332,35 +486,45 @@ def show_validation_interface(current_user):
 
         st.markdown("---")
         st.header("Parsed PDF (rendered)")
-        pdf_path = PDF_DIR / (Path(current_image).stem + ".pdf")
-        if pdf_path.exists():
-            doc = fitz.open(pdf_path)
-            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(3, 3))
-            st.image(pix.tobytes(output="png"), use_container_width=True)
-        else:
-            st.error("PDF not found")
+        
+        # Check multiple possible locations for the compiled PDF
+        stem = Path(current_image).stem
+        possible_pdf_paths = [
+            PDF_DIR / f"{stem}.pdf",  # LaTeX compilation output directory (from config)
+            TSV_DIR / "latex" / f"{stem}.pdf",  # Alternative LaTeX compilation path
+        ]
+        
+        pdf_found = False
+        for pdf_path in possible_pdf_paths:
+            if pdf_path.exists():
+                try:
+                    doc = fitz.open(pdf_path)
+                    pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(3, 3))
+                    st.image(pix.tobytes(output="png"), use_container_width=True)
+                    st.caption(f"PDF source: {pdf_path.name}")
+                    pdf_found = True
+                    break
+                except Exception as e:
+                    st.warning(f"Could not display PDF {pdf_path.name}: {e}")
+                    continue
+        
+        if not pdf_found:
+            st.info("No compiled PDF found. Use 'Save and Recompile from TSV' or 'Compile from LaTeX' to generate.")
 
     # === TSV TAB ===
     with tab2:
         st.header("Edit TSV")
-        # Support both .tsv and legacy .csv (tab-delimited) files
+        # Use CSV files (tab-delimited)
         stem = Path(current_image).stem
-        tsv_candidate = TSV_DIR / f"{stem}.tsv"
-        csv_candidate = TSV_DIR / f"{stem}.csv"
-        if tsv_candidate.exists():
-            tsv_path = tsv_candidate
-        elif csv_candidate.exists():
-            tsv_path = csv_candidate
-        else:
-            # default to creating a .tsv on save if nothing exists yet
-            tsv_path = tsv_candidate
+        csv_file = TSV_DIR / f"{stem}.csv"
+        tsv_path = csv_file  # Use CSV file for TSV operations
         tab_symbol = "→"
 
-        if tsv_candidate.exists() or csv_candidate.exists():
+        if csv_file.exists():
             tsv_text = tsv_path.read_text(encoding="utf-8")
         else:
             tsv_text = ""
-            st.info("No TSV/CSV found yet for this image. You can create one and save.")
+            st.info("No CSV found yet for this image. You can create one and save.")
 
         # Session state: show fixed/corrected TSV after saving
         session_key = f"edited_visible_{current_image}"
@@ -422,16 +586,10 @@ def show_validation_interface(current_user):
     # === LaTeX TAB ===
     with tab3:
         st.header("Edit LaTeX")
-        # Determine the same TSV path candidates to infer LaTeX location
+        # Determine CSV file path for LaTeX generation
         stem = Path(current_image).stem
-        tsv_candidate = TSV_DIR / f"{stem}.tsv"
-        csv_candidate = TSV_DIR / f"{stem}.csv"
-        if tsv_candidate.exists():
-            base_tsv_path = tsv_candidate
-        elif csv_candidate.exists():
-            base_tsv_path = csv_candidate
-        else:
-            base_tsv_path = tsv_candidate  # will be created on regeneration
+        csv_file = TSV_DIR / f"{stem}.csv"
+        base_tsv_path = csv_file  # Use CSV file for LaTeX operations
 
         # LaTeX path follows pdf_utils: TSV_DIR/<...>/latex/<stem>.tex
         latex_path = base_tsv_path.parent / "latex" / f"{stem}.tex"

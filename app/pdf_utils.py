@@ -66,8 +66,13 @@ def _wrap_ce(s: str) -> str:
     # If already contains \ce{...}, assume caller supplied valid mhchem content
     if r"\ce{" in s:
         # Still normalize unicode arrows globally
-        return _normalize_reaction(s)
+        s = _normalize_reaction(s)
+        # Fix any remaining \cdot inside \ce{...} - replace with simple dot
+        s = re.sub(r"\\cdot", ".", s)
+        return s
     s = _normalize_reaction(s)
+    # Fix any remaining \cdot - replace with simple dot for mhchem
+    s = re.sub(r"\\cdot", ".", s)
     return r"\ce{" + s + r"}"
 
 
@@ -84,6 +89,7 @@ def escape_latex(s):
     for a, b in [
         ("&", "\\&"),
         ("%", "\\%"),
+        ("$", "\\$"),
         ("#", "\\#"),
         ("_", "\\_"),
         ("{", "\\{"),
@@ -242,6 +248,19 @@ def escape_text_allow_ce(s: str) -> str:
     """Escape text while preserving inline math ($, \(\), \[\]) and \ce{...} blocks.
     Before escaping, convert common math chemistry ($\mathrm{...}$) to \ce{...}.
     """
+    # First, fix specific problematic chemical patterns
+    # Fix bare chemical formulas like O_3^- to proper math mode
+    s = re.sub(r'\b([A-Z][a-z]?)(\d*)(_\d+)?(\^[-+])?(?=\W|$)(?![^$]*\$)', 
+               lambda m: f'${m.group(0)}$' if ('_' in m.group(0) or '^' in m.group(0)) else m.group(0), s)
+    
+    # Fix specific cases
+    s = re.sub(r'\bO_3\^-\b(?![^$]*\$)', r'$O_3^{-}$', s)
+    s = re.sub(r'\bO_2\b(?=\$\))', r'O_2', s)  # Keep O_2 as is when followed by $)
+    s = re.sub(r'\bCO_3\^{2-}\b(?![^$]*\$)', r'$CO_3^{2-}$', s)
+    
+    # Avoid merging fragmented math patterns to prevent nested $...$
+    # Leave sequences like $k$(O$^{.-}$ + O$_2$) as-is (valid in LaTeX)
+    
     s = _normalize_inline_chem_to_ce(s)
     pieces = []
     for seg, is_raw in _split_preserve_math_and_ce(s):
@@ -267,6 +286,9 @@ def tsv_to_full_latex_article(tsv_path):
         "Comments",
         "Reference",
     ]
+
+    # Helper to detect pH-like values such as "12-13", "11,13", "7", "7.2"
+    _pH_re = re.compile(r"^\s*\d+(?:[.,]\d+)?(?:\s*[-,–]\s*\d+(?:[.,]\d+)?)?\s*$")
 
     rows = []
     with open(tsv_path, encoding="utf-8") as f:
@@ -296,24 +318,49 @@ def tsv_to_full_latex_article(tsv_path):
     ]
 
     for row in rows:
+        # Default mapping
+        no_raw, name_raw = row[0], row[1]
         reaction_raw = row[2]
-        reaction_cell = _wrap_ce(reaction_raw) if reaction_raw.strip() else "~"
+        ph_raw = row[3]
+        rate_raw = row[4]
+        comments_raw = row[5]
+        ref_raw = row[6]
 
-        ph_cell = escape_text_allow_ce(row[3]) if row[3].strip() else "~"
+        # Heuristic: continuation rows often misplace pH into col[2] and shift others left
+        if (not (no_raw or name_raw)) and _pH_re.match(reaction_raw.strip() if reaction_raw else ""):
+            # Remap: col2->pH, col3->rate, col4->comments, col5->reference
+            ph_raw = reaction_raw
+            rate_raw = row[3]
+            comments_raw = row[4]
+            ref_raw = row[5]
+            reaction_raw = ""
 
-        rate_raw = _strip_math_delims(row[4])
+        # Build reaction cell
+        if reaction_raw.strip() and re.search(r'[A-Za-z]|->|<-|<=>|\+', reaction_raw):
+            reaction_cell = _wrap_ce(reaction_raw)
+        else:
+            reaction_cell = "~"
+
+        # Build other cells
+        ph_cell = escape_text_allow_ce(ph_raw) if ph_raw and ph_raw.strip() else "~"
+
+        rate_raw = _strip_math_delims(rate_raw or "")
         rate_cell = "$%s$" % (_normalize_math(rate_raw)) if rate_raw.strip() else "~"
 
-        comments_cell = escape_text_allow_ce(row[5]) if row[5].strip() else "~"
+        comments_raw = _strip_math_delims(comments_raw or "")
+        comments_cell = escape_text_allow_ce(comments_raw) if comments_raw.strip() else "~"
+
+        ref_raw = _strip_math_delims(ref_raw or "")
+        ref_cell = escape_text_allow_ce(ref_raw) if ref_raw.strip() else "~"
 
         formatted = [
-            escape_latex(row[0]),
-            escape_latex(row[1]),
+            escape_latex(no_raw),
+            escape_latex(name_raw),
             reaction_cell,
             ph_cell,
             rate_cell,
             comments_cell,
-            escape_text_allow_ce(row[6]) if row[6].strip() else "~",
+            ref_cell,
         ]
         latex.append(" \u0026 ".join(formatted) + " " + ("\\" * 2))
 

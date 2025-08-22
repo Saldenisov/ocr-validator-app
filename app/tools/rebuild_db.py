@@ -1,15 +1,17 @@
+import json
 import math
 import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from app.config import AVAILABLE_TABLES, get_table_paths
 from app.db_utils import load_db
 from app.import_reactions import import_single_csv_idempotent
-from app.reactions_db import ensure_db, set_validated_by_source
+from app.reactions_db import ensure_db, set_validated_by_source, get_validation_meta_by_source
 
 CHUNK_SIZE = 50
 DB_FILE = Path("reactions.db")
@@ -58,6 +60,9 @@ def collect_sources(tables: list[str]) -> list[tuple[int, Path, dict[str, Any]]]
             # normalize meta
             if isinstance(meta, bool):
                 meta = {"validated": bool(meta), "by": None, "at": None}
+            # Only include validated entries
+            if not bool(meta.get("validated", False)):
+                continue
             stem = Path(img).stem
             csv_path = TSV_DIR / f"{stem}.csv"
             tsv_path = TSV_DIR / f"{stem}.tsv"
@@ -67,6 +72,67 @@ def collect_sources(tables: list[str]) -> list[tuple[int, Path, dict[str, Any]]]
                 continue
             sources.append((tno, source, meta))
     return sources
+
+
+def sync_db_validation_to_json_files() -> None:
+    """Sync current database validation state to validation_db.json files.
+    
+    This ensures that JSON files on disk reflect the current database validation state
+    before rebuilding from those JSON files.
+    """
+    print("[SYNC] Syncing database validation state to JSON files...")
+    con = ensure_db()
+    
+    for table in AVAILABLE_TABLES:
+        try:
+            IMAGE_DIR, PDF_DIR, TSV_DIR, DB_JSON_PATH = get_table_paths(table)
+            
+            # Get all images for this table
+            images_all = sorted([p.name for p in IMAGE_DIR.glob("*.png")])
+            
+            # Build validation map from database
+            validation_map = {}
+            total_images = len(images_all)
+            validated_count = 0
+            
+            for img in images_all:
+                stem = Path(img).stem
+                src_csv = TSV_DIR / f"{stem}.csv"
+                src_tsv = TSV_DIR / f"{stem}.tsv"
+                source_file = (
+                    str(src_csv if src_csv.exists() else src_tsv)
+                    if (src_csv.exists() or src_tsv.exists())
+                    else None
+                )
+                
+                if source_file:
+                    meta = get_validation_meta_by_source(con, source_file)
+                    validated = bool(meta.get("validated", False))
+                    validation_map[img] = {
+                        "validated": validated,
+                        "by": meta.get("by"),
+                        "at": meta.get("at"),
+                    }
+                    if validated:
+                        validated_count += 1
+                else:
+                    validation_map[img] = {
+                        "validated": False,
+                        "by": None,
+                        "at": None,
+                    }
+            
+            # Write validation_map directly (not wrapped in metadata)
+            # This matches the format expected by load_db function
+            DB_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+            DB_JSON_PATH.write_text(json.dumps(validation_map, indent=2, ensure_ascii=False), encoding="utf-8")
+            
+            print(f"[SYNC] {table}: {validated_count}/{total_images} validated, wrote to {DB_JSON_PATH.name}")
+            
+        except Exception as e:
+            print(f"[SYNC ERROR] Failed to sync {table}: {e}")
+    
+    print("[SYNC] Database validation state synced to JSON files")
 
 
 def rebuild_db_from_validations(chunk_size: int = CHUNK_SIZE):
@@ -169,7 +235,7 @@ def build_db_offline_fast(build_path: Path = Path("reactions_build.db")) -> None
         _safe_remove_db_files(build_path)
     # Compute absolute path to the repository root and the fast_populate script
     repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "fast_populate_db.py"
+    script = repo_root / "app" / "fast_populate_db.py"
     if not script.exists():
         raise FileNotFoundError(f"fast_populate_db.py not found at {script}")
     # Run the builder targeting build_path

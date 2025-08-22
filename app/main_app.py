@@ -20,6 +20,7 @@ from app.reactions_db import (
     ensure_db,
     get_reaction_with_measurements,
     get_validation_meta_by_source,
+    get_validation_statistics,
     list_reactions,
     search_reactions,
 )
@@ -195,6 +196,92 @@ with col2:
 
 st.markdown("---")
 
+# Optional maintenance pause to prevent DB access during swaps
+_db_paused = bool(st.session_state.get("db_paused", False))
+if _db_paused:
+    con = None
+else:
+    con = ensure_db()
+
+# === VALIDATION STATISTICS (for all users) ===
+st.subheader("📊 Project Statistics")
+
+if _db_paused:
+    st.info("Statistics are temporarily unavailable during maintenance.")
+else:
+    try:
+        stats = get_validation_statistics(con)
+        
+        # Global overview
+        global_stats = stats["global"]
+        db_stats = stats["database"]
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric(
+                "Total Images", 
+                global_stats["total_images"],
+                help="Total OCR images across all tables"
+            )
+        with col2:
+            st.metric(
+                "Validated Images", 
+                global_stats["validated_images"],
+                help="Images that have been validated by experts"
+            )
+        with col3:
+            st.metric(
+                "Database Reactions", 
+                db_stats["validated_reactions"],
+                help="Validated reactions available in the searchable database"
+            )
+        with col4:
+            st.metric(
+                "Total Measurements", 
+                db_stats["total_measurements"],
+                help="Individual reaction measurements in the database"
+            )
+        
+        # Progress bar
+        progress_text = f"Validation Progress: {global_stats['validated_images']}/{global_stats['total_images']} images ({global_stats['validation_percentage']:.1f}%)"
+        st.caption(progress_text)
+        st.progress(global_stats["validation_percentage"] / 100.0)
+        
+        # Per-table breakdown
+        with st.expander("📋 Detailed Progress by Table", expanded=False):
+            table_stats = stats["tables"]
+            for table_stat in table_stats:
+                table_name = table_stat["table"]
+                table_no = table_stat["table_no"]
+                
+                # Table category descriptions
+                table_descriptions = {
+                    5: "Radical-radical reactions",
+                    6: "Hydrated electrons in aqueous solution", 
+                    7: "Hydrogen atoms in aqueous solution",
+                    8: "Hydroxyl radicals in aqueous solution",
+                    9: "Oxide radical ion in aqueous solution"
+                }
+                
+                description = table_descriptions.get(table_no, f"Table {table_no}")
+                
+                col_name, col_progress, col_numbers = st.columns([2, 2, 1])
+                with col_name:
+                    st.write(f"**{table_name.upper()}:** {description}")
+                with col_progress:
+                    if table_stat["total_images"] > 0:
+                        progress_val = table_stat["validation_percentage"] / 100.0
+                        st.progress(progress_val)
+                    else:
+                        st.write("No images")
+                with col_numbers:
+                    st.write(f"{table_stat['validated_images']}/{table_stat['total_images']} ({table_stat['validation_percentage']:.1f}%)")
+                        
+    except Exception as e:
+        st.error(f"Could not load statistics: {e}")
+
+st.markdown("---")
+
 # Activity log (visible only to superuser)
 if current_user == "saldenisov":
     with st.expander("🪵 Activity Log", expanded=False):
@@ -208,17 +295,10 @@ if current_user == "saldenisov":
 # === BROWSE + SEARCH TABS ===
 browse_tab, search_tab = st.tabs(["📚 Browse Reactions", "🔎 Search Reactions"])
 
-# Optional maintenance pause to prevent DB access during swaps
-_db_paused = bool(st.session_state.get("db_paused", False))
-if _db_paused:
-    con = None
-else:
-    con = ensure_db()
-
 # --- Admin-only tools: Resync from JSON and Fast update ---
 if current_user == "saldenisov":
     with st.expander("🛠 Admin Tools", expanded=False):
-        st.caption("Admin utilities for rebuilding the reactions database.")
+        st.caption("Admin utilities and statistics for the reactions database.")
         st.warning(
             "These actions will reset reactions.db. Ensure no other process is using the database before running."
         )
@@ -230,91 +310,104 @@ if current_user == "saldenisov":
                 st.session_state.db_paused = new_pause
                 log_event(f"Admin: DB pause set to {new_pause}")
                 st.rerun()
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Admin: Resync from JSON", type="secondary"):
-                log_event("Admin: Resync from JSON initiated")
-                # Engage pause and close our page connection to release locks before swap
-                st.session_state.db_paused = True
-                try:
-                    if 'con' in locals() and con is not None:
-                        con.close()
-                except Exception:
-                    pass
-                try:
-                    from app.tools.rebuild_db import build_db_offline_fast, swap_live_db
-                    from pathlib import Path as _P
 
-                    build_path = _P("reactions_build.db")
-                    # Build offline using fast path
-                    build_db_offline_fast(build_path)
-                    # Swap into place
-                    swap_live_db(build_path)
-                    st.success("Resync from JSON completed successfully (offline build + swap).")
-                    log_event("Admin: Resync from JSON completed (offline swap)")
-                    st.session_state.db_paused = False
-                    con = ensure_db()
-                    st.rerun()
-                except Exception as e:
-                    # If DB is corrupted and locked, attempt legacy retry after brief wait
-                    msg = str(e)
-                    if "Failed to remove corrupted DB" in msg or "Could not remove" in msg:
-                        log_event("Admin: Resync failed due to locked/corrupted DB; retrying legacy path")
-                        time.sleep(0.5)
-                        try:
-                            from app.tools.rebuild_db import rebuild_db_from_validations
+        # Single rebuild button - now only imports validated entries
+        if st.button("🔄 Rebuild Database from Validated Sources", type="primary", use_container_width=True):
+            log_event("Admin: Database rebuild initiated")
+            # Engage pause and close our page connection to release locks before swap
+            st.session_state.db_paused = True
+            try:
+                if 'con' in locals() and con is not None:
+                    con.close()
+            except Exception:
+                pass
+            try:
+                from app.tools.rebuild_db import build_db_offline_fast, swap_live_db
+                from pathlib import Path as _P
 
-                            rebuild_db_from_validations()
-                            st.success("Resync from JSON completed successfully (after retry).")
-                            log_event("Admin: Resync from JSON completed after retry")
-                            st.session_state.db_paused = False
-                            con = ensure_db()
-                            st.rerun()
-                        except Exception as e2:
-                            st.error(f"Resync from JSON failed after retry: {e2}")
-                            log_event(f"Admin: Resync from JSON failed after retry: {e2}")
-                            st.session_state.db_paused = False
-                            try:
-                                con = ensure_db()
-                            except Exception:
-                                pass
-                    else:
-                        st.error(f"Resync from JSON failed: {e}")
-                        log_event(f"Admin: Resync from JSON failed: {e}")
+                build_path = _P("reactions_build.db")
+                # Build offline using fast path (validated entries only)
+                build_db_offline_fast(build_path)
+                # Swap into place
+                swap_live_db(build_path)
+                st.success("Database rebuilt successfully with validated entries only!")
+                log_event("Admin: Database rebuild completed (offline swap)")
+                st.session_state.db_paused = False
+                con = ensure_db()
+                st.rerun()
+            except Exception as e:
+                # If DB is corrupted and locked, attempt legacy retry after brief wait
+                msg = str(e)
+                if "Failed to remove corrupted DB" in msg or "Could not remove" in msg:
+                    log_event("Admin: Rebuild failed due to locked/corrupted DB; retrying legacy path")
+                    time.sleep(0.5)
+                    try:
+                        from app.tools.rebuild_db import rebuild_db_from_validations
+
+                        rebuild_db_from_validations()
+                        st.success("Database rebuilt successfully (after retry).")
+                        log_event("Admin: Database rebuild completed after retry")
                         st.session_state.db_paused = False
-                        # Make sure connection is open even on error
+                        con = ensure_db()
+                        st.rerun()
+                    except Exception as e2:
+                        st.error(f"Database rebuild failed after retry: {e2}")
+                        log_event(f"Admin: Database rebuild failed after retry: {e2}")
+                        st.session_state.db_paused = False
                         try:
                             con = ensure_db()
                         except Exception:
                             pass
-        with c2:
-            if st.button("Admin: Fast update", type="primary"):
-                log_event("Admin: Fast update initiated")
-                # Engage pause and close current connection to avoid Windows file lock; fast_populate recreates the DB file
-                st.session_state.db_paused = True
-                try:
-                    if 'con' in locals() and con is not None:
-                        con.close()
-                except Exception:
-                    pass
-                try:
-                    from fast_populate_db import bulk_import_validated_sources
-
-                    bulk_import_validated_sources()
-                    st.success("Fast update completed successfully.")
-                    log_event("Admin: Fast update completed")
+                else:
+                    st.error(f"Database rebuild failed: {e}")
+                    log_event(f"Admin: Database rebuild failed: {e}")
                     st.session_state.db_paused = False
-                    con = ensure_db()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Fast update failed: {e}")
-                    log_event(f"Admin: Fast update failed: {e}")
-                    st.session_state.db_paused = False
-                    # Reopen connection so the rest of the page doesn't break
+                    # Make sure connection is open even on error
                     try:
                         con = ensure_db()
                     except Exception:
                         pass
+        
+        st.markdown("---")
+        st.subheader("⚠️ Advanced Operations")
+        
+        # Sync DB to JSON files with warning
+        st.markdown("**Overwrite JSON Files from Database**")
+        st.warning(
+            "⚠️ **IRREVERSIBLE OPERATION**: This will overwrite all validation_db.json files "
+            "with current database validation state. Any manual edits to JSON files will be lost permanently."
+        )
+        
+        # Two-step confirmation for sync
+        sync_confirmed = st.checkbox(
+            "I understand this will permanently overwrite all validation_db.json files",
+            key="sync_confirmation"
+        )
+        
+        if st.button(
+            "🔄 Overwrite JSON Files from Database", 
+            type="secondary", 
+            disabled=not sync_confirmed,
+            use_container_width=True
+        ):
+            log_event("Admin: Sync DB to JSON initiated")
+            try:
+                from app.tools.rebuild_db import sync_db_validation_to_json_files
+                sync_db_validation_to_json_files()
+                st.success("✅ Successfully synced database validation state to JSON files!")
+                log_event("Admin: Sync DB to JSON completed")
+            except Exception as e:
+                st.error(f"Sync failed: {e}")
+                log_event(f"Admin: Sync DB to JSON failed: {e}")
+        
+        st.info(
+            "ℹ️ **How validation works:**\n"
+            "- Use the validation interface to mark reactions as validated\n"
+            "- Validation status is stored in the database in real-time\n"
+            "- Rebuild database reads from validation_db.json files on disk\n"
+            "- Export JSON files from validation interface for backup\n"
+            "- Use 'Overwrite JSON Files' only if you need JSON files to match current database state"
+        )
 
 with browse_tab:
     if st.session_state.get("db_paused", False):
@@ -442,11 +535,11 @@ with search_tab:
                 key="table_filter",
                 format_func=lambda x: {
                     "All": "All",
-                    5: "Table5 (water radiolysis)",
-                    6: "Table6 (e_aq^-) ",
-                    7: "Table7 (H•)",
-                    8: "Table8 (OH•)",
-                    9: "Table9 (O•−)",
+                    5: "Table5 (radical-radical reactions)",
+                    6: "Table6 (hydrated electrons)",
+                    7: "Table7 (hydrogen atoms)",
+                    8: "Table8 (hydroxyl radicals)",
+                    9: "Table9 (oxide radical ion)",
                 }[x]
                 if x != "All"
                 else "All",
@@ -471,3 +564,4 @@ with search_tab:
                             st.markdown(f"**Notes:** {r['notes']}")
         else:
             st.info("Enter a search term above to find reactions.")
+
