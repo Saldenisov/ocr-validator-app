@@ -6,7 +6,8 @@ __pycache__
 .env
 .venv
 .vscode
-.idea
+# Note: Keep .git for LFS support - don't exclude it
+# .git
 data-full/**/__pycache__
 # node/npm
 node_modules
