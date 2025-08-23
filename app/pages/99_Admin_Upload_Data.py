@@ -7,7 +7,6 @@ table data that will be extracted to the data directory.
 import io
 import os
 import shutil
-import tempfile
 import zipfile
 from pathlib import Path
 
@@ -83,7 +82,9 @@ def delete_folder_in_base(folder_name: str) -> tuple[bool, str]:
         base_resolved = Path(BASE_DIR).resolve()
         if not target.exists() or not target.is_dir():
             return False, "Folder not found"
-        if os.path.commonpath([str(base_resolved)]) != os.path.commonpath([str(base_resolved), str(target)]):
+        if os.path.commonpath([str(base_resolved)]) != os.path.commonpath(
+            [str(base_resolved), str(target)]
+        ):
             return False, "Not allowed"
         if target == base_resolved:
             return False, "Refusing to delete base directory"
@@ -169,7 +170,10 @@ def main():
 
     col1, col2 = st.columns(2)
     with col1:
-        st.code(f"Target directory: {BASE_DIR}")
+        try:
+            st.code(f"Target directory: {BASE_DIR.resolve()}")
+        except Exception:
+            st.code(f"Target directory: {BASE_DIR}")
 
     with col2:
         if os.path.exists(BASE_DIR):

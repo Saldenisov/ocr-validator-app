@@ -115,6 +115,9 @@ def show_validation_interface(current_user):
         return imgs, tsv_dir
 
     from app.reactions_db import (
+        DB_PATH as REACTIONS_DB_PATH,
+    )
+    from app.reactions_db import (
         ensure_db,
         ensure_reaction_for_png,
         get_validation_meta_by_image,
@@ -125,6 +128,11 @@ def show_validation_interface(current_user):
     # Reuse single DB connection throughout the validation interface
     # Use the persistent reactions DB (resolved in reactions_db.DB_PATH)
     con = ensure_db()
+    try:
+        st.sidebar.markdown(f"DB file: {REACTIONS_DB_PATH}")
+        st.sidebar.markdown(f"DB exists: {REACTIONS_DB_PATH.exists()}")
+    except Exception:
+        pass
 
     # Compute global stats: by PNG (each PNG is a reaction). CSV presence is optional.
     agg_total = 0
