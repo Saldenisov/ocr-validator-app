@@ -6,7 +6,7 @@ from typing import Any
 
 from app.config import BASE_DIR
 
-DB_PATH = Path("reactions.db")
+DB_PATH = BASE_DIR / "reactions.db"
 
 TABLE_CATEGORY = {
     5: "Rate constants for radical-radical reactions",

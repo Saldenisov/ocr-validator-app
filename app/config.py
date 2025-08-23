@@ -15,9 +15,9 @@ _env_data = os.getenv("DATA_DIR")
 _env_base = os.getenv("BASE_DIR")
 
 if _env_data:
-    BASE_DIR: Path = Path(_env_data)
+    BASE_DIR = Path(_env_data)
 elif _env_base:
-    BASE_DIR: Path = Path(_env_base)
+    BASE_DIR = Path(_env_base)
 else:
     # Check environment-specific paths in order of preference
     candidates = [
