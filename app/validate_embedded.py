@@ -38,6 +38,7 @@ def discover_tables(base_dir: Path) -> list[str]:
     except Exception:
         return []
 
+
 # Try import fitz (PyMuPDF)
 try:
     import fitz
@@ -122,9 +123,8 @@ def show_validation_interface(current_user):
     )
 
     # Reuse single DB connection throughout the validation interface
-    # Use the correct database path (reactions.db in the root directory)
-    db_path = Path("reactions.db")
-    con = ensure_db(db_path)
+    # Use the persistent reactions DB (resolved in reactions_db.DB_PATH)
+    con = ensure_db()
 
     # Compute global stats: by PNG (each PNG is a reaction). CSV presence is optional.
     agg_total = 0
@@ -146,7 +146,7 @@ def show_validation_interface(current_user):
     st.sidebar.markdown("---")
 
     # === Paths and DB for current table ===
-    IMAGE_DIR, PDF_DIR, TSV_DIR, DB_PATH = get_table_paths(table_choice)
+    IMAGE_DIR, PDF_DIR, TSV_DIR, DB_JSON_PATH = get_table_paths(table_choice)
     # Debug info to help diagnose path issues in deployments
     st.sidebar.markdown(f"BASE_DIR: {BASE_DIR}")
     st.sidebar.markdown(f"IMAGE_DIR exists: {IMAGE_DIR.exists()}")
@@ -331,7 +331,7 @@ def show_validation_interface(current_user):
         try:
             from app.reactions_db import ensure_db
 
-            con = ensure_db(db_path)
+            con = ensure_db()
 
             # Ensure a reaction row exists for this PNG; attempt to import CSV if present
             try:
