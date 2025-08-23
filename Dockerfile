@@ -25,6 +25,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ghostscript \
+    texlive-xetex \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
