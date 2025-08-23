@@ -163,18 +163,41 @@ def show_validation_interface(current_user):
     # Determine images directly from directory; compute stats from cached validation data
     images_all = sorted([p.name for p in IMAGE_DIR.glob("*.png")], key=natural_key)
 
-    # Build local cache for current table - check DB for ALL images by PNG
+    # Build local cache for current table - prefer PNG-level meta, fallback to source-level meta
     # Clear any existing cache to ensure we always get fresh DB state
     current_table_cache = {}
+
+    def _source_for_image(stem: str):
+        csv_file = TSV_DIR / f"{stem}.csv"
+        tsv_file = TSV_DIR / f"{stem}.tsv"
+        if csv_file.exists():
+            return csv_file
+        if tsv_file.exists():
+            return tsv_file
+        return None
 
     # Force refresh validation cache from DB on each page load
     for img in images_all:
         png_path = IMAGE_DIR / img
+        stem = Path(img).stem
         try:
-            meta = get_validation_meta_by_image(con, str(png_path))
-            current_table_cache[img] = meta
+            meta_png = get_validation_meta_by_image(con, str(png_path))
         except Exception:
-            current_table_cache[img] = {"validated": False, "by": None, "at": None}
+            meta_png = {"validated": False, "by": None, "at": None}
+
+        # Fallback: if PNG-level says not validated, try source-level meta
+        meta = meta_png
+        if not bool(meta_png.get("validated", False)):
+            src = _source_for_image(stem)
+            if src is not None:
+                try:
+                    meta_src = get_validation_meta_by_source(con, str(src))
+                    if bool(meta_src.get("validated", False)):
+                        meta = meta_src
+                except Exception:
+                    pass
+
+        current_table_cache[img] = meta
 
     def image_meta(name: str):
         return current_table_cache.get(name, {"validated": False, "by": None, "at": None})
@@ -396,15 +419,40 @@ def show_validation_interface(current_user):
 
             # Update DB validation state with metadata by PNG path
             timestamp = datetime.now().isoformat() if desired_state else None
-            updated_count = set_validated_by_image(
+            updated_img = set_validated_by_image(
                 con,
                 str(png_path),
                 desired_state,
                 by=current_user if desired_state else None,
                 at_iso=timestamp,
             )
+
+            # Also update by source if we can resolve it
+            updated_src = 0
+            try:
+                stem2 = Path(current_image).stem
+                csv2 = TSV_DIR / f"{stem2}.csv"
+                tsv2 = TSV_DIR / f"{stem2}.tsv"
+                src2 = csv2 if csv2.exists() else (tsv2 if tsv2.exists() else None)
+                if src2 is not None:
+                    from app.reactions_db import set_validated_by_source as _set_by_src
+
+                    updated_src = _set_by_src(
+                        con,
+                        str(src2),
+                        desired_state,
+                        by=current_user if desired_state else None,
+                        at_iso=timestamp,
+                    )
+            except Exception as _e:
+                pass
+
             if debug_mode:
-                st.sidebar.write(f"[DEBUG] set_validated_by_image updated_rows={updated_count}")
+                st.sidebar.write(
+                    f"[DEBUG] updates -> by_image={updated_img}, by_source={updated_src}"
+                )
+
+            updated_count = (updated_img or 0) + (updated_src or 0)
 
             # Debug validation process (uncomment for debugging)
             # print(f"[DEBUG VALIDATE] Action: {'VALIDATE' if desired_state else 'UNVALIDATE'} for {current_image}")
