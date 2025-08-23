@@ -14,24 +14,32 @@ AVAILABLE_TABLES = ["table5", "table6", "table7", "table8", "table9"]
 _env_data = os.getenv("DATA_DIR")
 _env_base = os.getenv("BASE_DIR")
 
+# Debug output
+print(f"[CONFIG DEBUG] DATA_DIR env var: {_env_data}")
+print(f"[CONFIG DEBUG] BASE_DIR env var: {_env_base}")
+print(f"[CONFIG DEBUG] /app exists: {Path('/app').exists()}")
+print(f"[CONFIG DEBUG] /data exists: {Path('/data').exists()}")
+print(f"[CONFIG DEBUG] / exists: {Path('/').exists()}")
+
 if _env_data:
     BASE_DIR = Path(_env_data)
+    print(f"[CONFIG DEBUG] Using DATA_DIR env var: {BASE_DIR}")
 elif _env_base:
     BASE_DIR = Path(_env_base)
+    print(f"[CONFIG DEBUG] Using BASE_DIR env var: {BASE_DIR}")
 else:
     # Check environment-specific paths in order of preference
-    # For Railway/Docker, always prefer /data if it exists as a mount point
-    if Path("/").exists():  # Container environment
-        # In containers, prioritize /data volume mount over /app/data
-        if Path("/data").exists():
-            BASE_DIR = Path("/data")
-        else:
-            BASE_DIR = Path("/app/data")  # Legacy fallback
+    # Force /data for Railway/Docker environments
+    if Path("/app").exists() and Path("/").exists():  # Container environment (Railway/Docker)
+        BASE_DIR = Path("/data")  # Always use /data in containers
+        print(f"[CONFIG DEBUG] Container detected, using /data: {BASE_DIR}")
     elif Path(r"E:\\ICP_notebooks\\Buxton").exists():  # Local Windows
         BASE_DIR = Path(r"E:\\ICP_notebooks\\Buxton\\data")
+        print(f"[CONFIG DEBUG] Windows dev env: {BASE_DIR}")
     else:
         # Local development fallback
         BASE_DIR = Path(__file__).parent.parent / "data"
+        print(f"[CONFIG DEBUG] Local dev fallback: {BASE_DIR}")
 
 # Ensure BASE_DIR exists on import (for uploaded data)
 BASE_DIR.mkdir(parents=True, exist_ok=True)
