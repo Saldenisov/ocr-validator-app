@@ -37,7 +37,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=fetch /src/app /app/app
 
 # Create data directory for uploads (will be mounted as volume in production)
-RUN mkdir -p /app/data
+RUN mkdir -p /data
 
 EXPOSE 8501
 # Use sh for POSIX-compatible parameter expansion (no need for bash in slim)

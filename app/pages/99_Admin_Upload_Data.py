@@ -25,14 +25,19 @@ except ImportError:
 try:
     from app.config import BASE_DIR
 except ImportError:
-    # Fallback - use environment variable or detect based on platform
+    # Fallback - prefer DATA_DIR env var, then BASE_DIR, then detect
+    _data_dir_str = os.environ.get("DATA_DIR")
     _base_dir_str = os.environ.get("BASE_DIR")
-    if _base_dir_str:
+    if _data_dir_str:
+        BASE_DIR = Path(_data_dir_str)
+    elif _base_dir_str:
         BASE_DIR = Path(_base_dir_str)
-    elif Path("/app").exists():  # Docker/Railway environment
+    elif Path("/data").exists():  # Docker/Railway environment (preferred mount)
+        BASE_DIR = Path("/data")
+    elif Path("/app").exists():  # Legacy Docker/Railway
         BASE_DIR = Path("/app/data")
-    elif Path(r"E:\ICP_notebooks\Buxton").exists():  # Local Windows
-        BASE_DIR = Path(r"E:\ICP_notebooks\Buxton\data")
+    elif Path(r"E:\\ICP_notebooks\\Buxton").exists():  # Local Windows
+        BASE_DIR = Path(r"E:\\ICP_notebooks\\Buxton\\data")
     else:
         BASE_DIR = Path("./data")  # Relative fallback
 
@@ -59,6 +64,34 @@ def extract_zip_safely(zip_bytes: bytes, dest_dir: str) -> None:
 
         # Extract all files
         zf.extractall(dest_dir)
+
+
+def delete_folder_in_base(folder_name: str) -> tuple[bool, str]:
+    """Safely delete a single subfolder within BASE_DIR.
+
+    Returns (ok, message).
+    """
+    try:
+        # Normalize folder name to avoid traversal
+        if not folder_name or os.path.basename(folder_name) != folder_name:
+            return False, "Invalid folder name"
+
+        target = Path(BASE_DIR) / folder_name
+        target = target.resolve()
+
+        # Safety checks
+        base_resolved = Path(BASE_DIR).resolve()
+        if not target.exists() or not target.is_dir():
+            return False, "Folder not found"
+        if os.path.commonpath([str(base_resolved)]) != os.path.commonpath([str(base_resolved), str(target)]):
+            return False, "Not allowed"
+        if target == base_resolved:
+            return False, "Refusing to delete base directory"
+
+        shutil.rmtree(target)
+        return True, f"Deleted {folder_name}"
+    except Exception as e:
+        return False, f"Error: {e}"
 
 
 def get_directory_size(path: Path | str) -> int:
@@ -161,6 +194,45 @@ def main():
                         st.write(f"  • `{subdir}` ({format_size(subdir_size)})")
         else:
             st.warning("Directory does not exist yet")
+
+    st.divider()
+
+    # Delete specific folders section
+    st.subheader("🧹 Delete Specific Folders")
+    try:
+        subdirs_for_delete = [
+            d
+            for d in os.listdir(BASE_DIR)
+            if os.path.isdir(os.path.join(BASE_DIR, d)) and not d.startswith(".")
+        ]
+    except Exception:
+        subdirs_for_delete = []
+
+    if not subdirs_for_delete:
+        st.caption("No folders available to delete.")
+    else:
+        selected_folders = st.multiselect(
+            "Select folders to delete (permanent)",
+            options=sorted(subdirs_for_delete),
+            help="Deletes selected folders from the data directory permanently.",
+        )
+        if st.button("🗑️ Delete selected folders", type="secondary", disabled=not selected_folders):
+            any_deleted = False
+            messages: list[str] = []
+            for folder in selected_folders:
+                ok, msg = delete_folder_in_base(folder)
+                messages.append(f"{folder}: {'✅' if ok else '❌'} {msg}")
+                any_deleted = any_deleted or ok
+
+            if any_deleted:
+                st.success("Some folders were deleted. Refreshing...")
+                for m in messages:
+                    st.write(m)
+                st.rerun()
+            else:
+                st.warning("No folders were deleted.")
+                for m in messages:
+                    st.write(m)
 
     st.divider()
 
