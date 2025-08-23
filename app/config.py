@@ -20,26 +20,18 @@ elif _env_base:
     BASE_DIR = Path(_env_base)
 else:
     # Check environment-specific paths in order of preference
-    candidates = [
-        Path("/data"),  # Preferred Railway volume mount
-        Path("/app/data"),  # Legacy path
-        Path(r"E:\\ICP_notebooks\\Buxton\\data"),  # Local Windows development
-        Path(__file__).parent.parent / "data",  # Relative fallback
-    ]
-
-    for candidate in candidates:
-        if candidate.exists():
-            BASE_DIR = candidate
-            break
-    else:
-        # If none exist, choose based on platform/environment
-        if Path("/data").exists() or Path("/").exists():  # Container environment
+    # For Railway/Docker, always prefer /data if it exists as a mount point
+    if Path("/").exists():  # Container environment
+        # In containers, prioritize /data volume mount over /app/data
+        if Path("/data").exists():
             BASE_DIR = Path("/data")
-        elif Path(r"E:\\ICP_notebooks\\Buxton").exists():  # Local Windows
-            BASE_DIR = Path(r"E:\\ICP_notebooks\\Buxton\\data")
         else:
-            # Fallback to relative path
-            BASE_DIR = Path(__file__).parent.parent / "data"
+            BASE_DIR = Path("/app/data")  # Legacy fallback
+    elif Path(r"E:\\ICP_notebooks\\Buxton").exists():  # Local Windows
+        BASE_DIR = Path(r"E:\\ICP_notebooks\\Buxton\\data")
+    else:
+        # Local development fallback
+        BASE_DIR = Path(__file__).parent.parent / "data"
 
 # Ensure BASE_DIR exists on import (for uploaded data)
 BASE_DIR.mkdir(parents=True, exist_ok=True)
