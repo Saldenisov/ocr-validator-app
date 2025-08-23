@@ -6,9 +6,7 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      # Mount only app code for development (read-only to avoid accidental changes)
-      - ./app:/app/app:ro
-      # Persistent volume for uploaded data
+      # Persistent volume for uploaded data only (keep code in the image)
       - data:/app/data
     environment:
       - BASE_DIR=/app/data

@@ -25,9 +25,16 @@ except ImportError:
 try:
     from app.config import BASE_DIR
 except ImportError:
-    # Fallback
-    _base_dir_str = os.environ.get("BASE_DIR", "/app/data")
-    BASE_DIR = Path(_base_dir_str)
+    # Fallback - use environment variable or detect based on platform
+    _base_dir_str = os.environ.get("BASE_DIR")
+    if _base_dir_str:
+        BASE_DIR = Path(_base_dir_str)
+    elif Path("/app").exists():  # Docker/Railway environment
+        BASE_DIR = Path("/app/data")
+    elif Path(r"E:\ICP_notebooks\Buxton").exists():  # Local Windows
+        BASE_DIR = Path(r"E:\ICP_notebooks\Buxton\data")
+    else:
+        BASE_DIR = Path("./data")  # Relative fallback
 
 
 def is_within_base(base: str, target: str) -> bool:

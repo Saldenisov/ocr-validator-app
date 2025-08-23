@@ -6,34 +6,33 @@ AVAILABLE_TABLES = ["table5", "table6", "table7", "table8", "table9"]
 # Determine BASE_DIR robustly across environments (Railway Docker, local Windows)
 # Priority:
 # 1) Explicit BASE_DIR env var if provided
-# 2) Local repo data folder (data next to this file)
-# 3) Common container paths (/app/data preferred, then /data)
-# 4) Local Windows development path
+# 2) Docker/Railway: /app/data
+# 3) Local Windows development: E:\ICP_notebooks\Buxton\data
+# 4) Fallback: ./data relative to config file
 _env_base = os.getenv("BASE_DIR")
 if _env_base:
-    _env_path = Path(_env_base)
-    if _env_path.exists():
-        BASE_DIR = _env_path
-    else:
-        BASE_DIR = Path(__file__).parent / "data"
+    BASE_DIR: Path = Path(_env_base)
 else:
-    # After repo restructuring, data lives at the project root, one level above this file
-    local_data = Path(__file__).parent.parent / "data"
-    if local_data.exists():
-        BASE_DIR = local_data
+    # Check environment-specific paths
+    candidates = [
+        Path("/app/data"),  # Docker/Railway
+        Path(r"E:\ICP_notebooks\Buxton\data"),  # Local Windows development
+        Path(__file__).parent.parent / "data",  # Relative fallback
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            BASE_DIR = candidate
+            break
     else:
-        candidates = [
-            Path("/app/data"),
-            Path("/data"),
-            Path(r"E:\\ICP_notebooks\\Buxton"),
-        ]
-        for _p in candidates:
-            if _p.exists():
-                BASE_DIR = _p
-                break
+        # If none exist, choose based on platform/environment
+        if Path("/app").exists():  # We're in Docker/Railway
+            BASE_DIR = Path("/app/data")
+        elif Path(r"E:\ICP_notebooks\Buxton").exists():  # Local Windows
+            BASE_DIR = Path(r"E:\ICP_notebooks\Buxton\data")
         else:
-            # Default to local data (created later) to keep paths consistent
-            BASE_DIR = local_data
+            # Fallback to relative path
+            BASE_DIR = Path(__file__).parent.parent / "data"
 
 # Ensure BASE_DIR exists on import (for uploaded data)
 BASE_DIR.mkdir(parents=True, exist_ok=True)

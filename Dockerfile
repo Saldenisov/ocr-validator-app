@@ -1,27 +1,17 @@
-# Multi-stage build to ensure Git LFS assets are materialized even when .git is absent in the build context (e.g., on Railway)
-
-# 1) Fetch stage: clone repo and checkout LFS files
+# Build stage: fetch application code only (data comes from uploads)
 FROM python:3.11-slim AS fetch
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    git-lfs \
     ca-certificates \
-    file \
     && rm -rf /var/lib/apt/lists/*
-
-RUN git lfs install
 
 ARG REPO=https://github.com/Saldenisov/radreactions.git
 # You can override REF at build time to pin to a tag/commit: --build-arg REF=<sha-or-tag>
 ARG REF=main
 
-RUN git clone --depth=1 --branch "$REF" "$REPO" /src && \
-    cd /src && \
-    git lfs fetch --all && \
-    git lfs checkout && \
-    # Optional verification (non-fatal): ensure some PNGs are real binaries, not LFS pointers
-    (find data -name "*.png" -type f -exec file {} \; | head -5 || true)
+# Clone repo for application code and requirements
+RUN git clone --depth=1 --branch "$REF" "$REPO" /src
 
 # 2) Runtime stage: minimal runtime with app and resolved data copied in
 FROM python:3.11-slim
@@ -45,6 +35,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application code (data comes from uploads via admin interface)
 COPY --from=fetch /src/app /app/app
+
+# Create data directory for uploads (will be mounted as volume in production)
+RUN mkdir -p /app/data
 
 EXPOSE 8501
 # Use sh for POSIX-compatible parameter expansion (no need for bash in slim)
