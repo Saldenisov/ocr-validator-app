@@ -149,7 +149,6 @@ def show_validation_interface(current_user):
     # Debug information - show DB path and existence
     try:
         st.sidebar.markdown(f"**DB file:** {REACTIONS_DB_PATH}")
-        st.sidebar.markdown(f"**DB exists:** {REACTIONS_DB_PATH.exists()}")
         if REACTIONS_DB_PATH.exists():
             try:
                 db_size = REACTIONS_DB_PATH.stat().st_size
@@ -349,40 +348,11 @@ def show_validation_interface(current_user):
         current_image = images[0] if images else None
         st.session_state.selected_image = current_image
 
-    st.sidebar.markdown(f"**Currently Selected:** {current_image}")
 
     # === Validation toggle (DB is the source of truth) ===
     # Read current status from DB for the selected image by PNG
     png_path = IMAGE_DIR / current_image
 
-    # Extra diagnostics to compare paths and DB matches
-    try:
-        canon_png = _canon(str(png_path))
-        by_img_count = con.execute(
-            "SELECT COUNT(*) FROM reactions WHERE png_path = ?", (canon_png,)
-        ).fetchone()[0]
-        st.sidebar.markdown(f"PNG abs: {png_path}")
-        st.sidebar.markdown(f"PNG canon: {canon_png}")
-        st.sidebar.markdown(f"DB matches by image: {by_img_count}")
-        # Source diagnostics
-        stem_dbg = Path(current_image).stem
-        src_csv_dbg = TSV_DIR / f"{stem_dbg}.csv"
-        src_tsv_dbg = TSV_DIR / f"{stem_dbg}.tsv"
-        src_dbg = (
-            src_csv_dbg if src_csv_dbg.exists() else (src_tsv_dbg if src_tsv_dbg.exists() else None)
-        )
-        if src_dbg is not None:
-            canon_src = _canon(str(src_dbg))
-            by_src_count = con.execute(
-                "SELECT COUNT(*) FROM reactions WHERE source_path = ?", (canon_src,)
-            ).fetchone()[0]
-            st.sidebar.markdown(f"SRC path: {src_dbg}")
-            st.sidebar.markdown(f"SRC canon: {canon_src}")
-            st.sidebar.markdown(f"DB matches by source: {by_src_count}")
-        else:
-            st.sidebar.markdown("SRC path: (none)")
-    except Exception:
-        pass
 
     db_meta_checked = False
     try:
