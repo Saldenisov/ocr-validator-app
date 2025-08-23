@@ -1,6 +1,6 @@
 @echo off
 echo Building Docker image...
-docker build -t radreactions:test -f ops\Dockerfile .
+docker build -t radreactions:test -f Dockerfile .
 
 if %ERRORLEVEL% neq 0 (
     echo Build failed!
@@ -8,7 +8,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo Build successful! Starting container...
-docker run -d --name radreactions-test -p 8501:8501 -e BASE_DIR=/app/data radreactions:test
+docker run -d --name radreactions-test -p 8501:8501 -e DATA_DIR=/data radreactions:test
 
 if %ERRORLEVEL% neq 0 (
     echo Failed to start container!
