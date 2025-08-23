@@ -311,14 +311,25 @@ def main():
                         with tempfile.TemporaryDirectory() as tmp_dir:
                             extract_zip_safely(uploaded_file.getvalue(), tmp_dir)
 
+                            # Debug: Show what was extracted
+                            all_extracted = os.listdir(tmp_dir)
+                            st.write(f"🔍 Debug: Extracted items: {all_extracted}")
+
                             # If the ZIP has a single top-level folder (common when zipping a folder),
                             # treat it as a wrapper and move its contents instead of the wrapper itself.
                             move_root = tmp_dir
-                            top_items = [name for name in os.listdir(tmp_dir) if not name.startswith(".")]
+                            top_items = [
+                                name for name in os.listdir(tmp_dir) 
+                                if not name.startswith(".") and not name.startswith("__MACOSX")
+                            ]
+                            st.write(f"🔍 Debug: Filtered items: {top_items}")
                             if len(top_items) == 1:
                                 only_path = os.path.join(tmp_dir, top_items[0])
                                 if os.path.isdir(only_path):
+                                    st.info(f"🔄 Unwrapping single folder: {top_items[0]}")
                                     move_root = only_path
+                            else:
+                                st.info(f"ℹ️ Multiple items detected, no unwrapping: {len(top_items)} items")
 
                             # Move extracted contents to BASE_DIR
                             for item in os.listdir(move_root):
