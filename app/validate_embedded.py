@@ -91,6 +91,20 @@ def show_validation_interface(current_user):
 
     st.sidebar.markdown("---")
 
+    # === ENVIRONMENT DEBUG INFO ===
+    st.sidebar.markdown("### 🔧 Environment Info")
+    try:
+        import os
+
+        st.sidebar.markdown(
+            f"**Platform:** {'Railway/Docker' if os.path.exists('/app') else 'Local'}"
+        )
+        st.sidebar.markdown(f"**DATA_DIR env:** {os.getenv('DATA_DIR', 'Not set')}")
+        st.sidebar.markdown(f"**BASE_DIR env:** {os.getenv('BASE_DIR', 'Not set')}")
+    except Exception as e:
+        st.sidebar.error(f"Env debug error: {e}")
+    st.sidebar.markdown("---")
+
     # Discover available tables dynamically from BASE_DIR; fall back to static list
     discovered = discover_tables(BASE_DIR)
     TABLES = discovered if discovered else AVAILABLE_TABLES
@@ -131,11 +145,24 @@ def show_validation_interface(current_user):
     # Reuse single DB connection throughout the validation interface
     # Use the persistent reactions DB (resolved in reactions_db.DB_PATH)
     con = ensure_db()
+
+    # Debug information - show DB path and existence
     try:
-        st.sidebar.markdown(f"DB file: {REACTIONS_DB_PATH}")
-        st.sidebar.markdown(f"DB exists: {REACTIONS_DB_PATH.exists()}")
-    except Exception:
-        pass
+        st.sidebar.markdown(f"**DB file:** {REACTIONS_DB_PATH}")
+        st.sidebar.markdown(f"**DB exists:** {REACTIONS_DB_PATH.exists()}")
+        if REACTIONS_DB_PATH.exists():
+            try:
+                db_size = REACTIONS_DB_PATH.stat().st_size
+                st.sidebar.markdown(f"**DB size:** {db_size:,} bytes")
+            except Exception as size_e:
+                st.sidebar.markdown(f"**DB size error:** {size_e}")
+    except Exception as db_e:
+        st.sidebar.error(f"**DB path error:** {db_e}")
+        # Fallback: try to show at least the raw path
+        try:
+            st.sidebar.markdown(f"**Raw DB_PATH:** {repr(REACTIONS_DB_PATH)}")
+        except Exception:
+            st.sidebar.error("Cannot display DB path information")
 
     # Compute global stats: by PNG (each PNG is a reaction). CSV presence is optional.
     agg_total = 0
