@@ -11,6 +11,33 @@ from app.config import AVAILABLE_TABLES, BASE_DIR, get_table_paths
 from app.pdf_utils import compile_tex_to_pdf, tsv_to_full_latex_article
 from app.tsv_utils import correct_tsv_file, tsv_to_visible, visible_to_tsv
 
+
+def discover_tables(base_dir: Path) -> list[str]:
+    """Discover table folders available under base_dir.
+
+    A table folder is any subdirectory of base_dir that is not hidden and contains
+    a "sub_tables_images" subdirectory (the expected structure for tables).
+    """
+    try:
+        candidates: list[str] = []
+        for p in sorted(base_dir.iterdir()):
+            if not p.is_dir():
+                continue
+            name = p.name
+            if name.startswith("."):
+                continue
+            if (p / "sub_tables_images").exists():
+                candidates.append(name)
+
+        def table_key(n: str):
+            m = re.match(r"table(\d+)$", n, re.IGNORECASE)
+            return int(m.group(1)) if m else n.lower()
+
+        candidates.sort(key=table_key)
+        return candidates
+    except Exception:
+        return []
+
 # Try import fitz (PyMuPDF)
 try:
     import fitz
@@ -62,10 +89,15 @@ def show_validation_interface(current_user):
         st.stop()
 
     st.sidebar.markdown("---")
+
+    # Discover available tables dynamically from BASE_DIR; fall back to static list
+    discovered = discover_tables(BASE_DIR)
+    TABLES = discovered if discovered else AVAILABLE_TABLES
+
     table_choice = st.sidebar.selectbox(
         "Select Table Folder:",
-        options=AVAILABLE_TABLES,
-        index=AVAILABLE_TABLES.index("table6") if "table6" in AVAILABLE_TABLES else 0,
+        options=TABLES,
+        index=TABLES.index("table6") if "table6" in TABLES else 0,
     )
     debug_mode = st.sidebar.checkbox(
         "Enable debug logs", value=False, help="Show verbose DB operations for validation"
@@ -97,7 +129,7 @@ def show_validation_interface(current_user):
     # Compute global stats: by PNG (each PNG is a reaction). CSV presence is optional.
     agg_total = 0
     agg_validated = 0
-    for t in AVAILABLE_TABLES:
+    for t in TABLES:
         img_dir, _, _, _ = get_table_paths(t)
         imgs = sorted([p.name for p in img_dir.glob("*.png")], key=natural_key)
         agg_total += len(imgs)
@@ -462,7 +494,7 @@ def show_validation_interface(current_user):
             },
         }
         tables: dict[str, object] = {}
-        for table in AVAILABLE_TABLES:
+        for table in TABLES:
             img_dir, _, tsv_dir, _ = get_table_paths(table)
             imgs = sorted([p.name for p in img_dir.glob("*.png")])
             t_total = len(imgs)

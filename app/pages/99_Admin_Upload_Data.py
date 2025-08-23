@@ -311,9 +311,18 @@ def main():
                         with tempfile.TemporaryDirectory() as tmp_dir:
                             extract_zip_safely(uploaded_file.getvalue(), tmp_dir)
 
+                            # If the ZIP has a single top-level folder (common when zipping a folder),
+                            # treat it as a wrapper and move its contents instead of the wrapper itself.
+                            move_root = tmp_dir
+                            top_items = [name for name in os.listdir(tmp_dir) if not name.startswith(".")]
+                            if len(top_items) == 1:
+                                only_path = os.path.join(tmp_dir, top_items[0])
+                                if os.path.isdir(only_path):
+                                    move_root = only_path
+
                             # Move extracted contents to BASE_DIR
-                            for item in os.listdir(tmp_dir):
-                                src_path = os.path.join(tmp_dir, item)
+                            for item in os.listdir(move_root):
+                                src_path = os.path.join(move_root, item)
                                 dst_path = os.path.join(BASE_DIR, item)
 
                                 if os.path.exists(dst_path):
