@@ -91,19 +91,6 @@ def show_validation_interface(current_user):
 
     st.sidebar.markdown("---")
 
-    # === ENVIRONMENT DEBUG INFO ===
-    st.sidebar.markdown("### 🔧 Environment Info")
-    try:
-        import os
-
-        st.sidebar.markdown(
-            f"**Platform:** {'Railway/Docker' if os.path.exists('/app') else 'Local'}"
-        )
-        st.sidebar.markdown(f"**DATA_DIR env:** {os.getenv('DATA_DIR', 'Not set')}")
-        st.sidebar.markdown(f"**BASE_DIR env:** {os.getenv('BASE_DIR', 'Not set')}")
-    except Exception as e:
-        st.sidebar.error(f"Env debug error: {e}")
-    st.sidebar.markdown("---")
 
     # Discover available tables dynamically from BASE_DIR; fall back to static list
     discovered = discover_tables(BASE_DIR)
