@@ -14,7 +14,7 @@ import streamlit as st
 
 # Import your existing auth functions
 try:
-    from app.auth import check_authentication
+    from auth import check_authentication
 except ImportError:
     # Fallback for development
     def check_authentication() -> str | None:
@@ -22,7 +22,7 @@ except ImportError:
 
 
 try:
-    from app.config import BASE_DIR
+    from config import BASE_DIR
 except ImportError:
     # Fallback - prefer DATA_DIR env var, then BASE_DIR, then detect
     _data_dir_str = os.environ.get("DATA_DIR")

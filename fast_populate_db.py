@@ -8,13 +8,13 @@ import sys
 import time
 from pathlib import Path
 
-# Ensure project root is on sys.path so `from app...` imports work when run directly
-ROOT = Path(__file__).resolve().parents[1]
+# Ensure project root is on sys.path when run directly
+ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.config import get_table_paths
-from app.reactions_db import (
+from config import get_table_paths
+from reactions_db import (
     MIGRATION_NAME_INIT,
     SCHEMA_SQL,
     TABLE_CATEGORY,

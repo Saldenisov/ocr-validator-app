@@ -6,10 +6,10 @@ from pathlib import Path
 import streamlit as st
 from PIL import Image, UnidentifiedImageError
 
-from app.auth_db import show_user_profile_page
-from app.config import AVAILABLE_TABLES, BASE_DIR, get_table_paths
-from app.pdf_utils import compile_tex_to_pdf, tsv_to_full_latex_article
-from app.tsv_utils import correct_tsv_file, tsv_to_visible, visible_to_tsv
+from auth_db import show_user_profile_page
+from config import AVAILABLE_TABLES, BASE_DIR, get_table_paths
+from pdf_utils import compile_tex_to_pdf, tsv_to_full_latex_article
+from tsv_utils import correct_tsv_file, tsv_to_visible, visible_to_tsv
 
 
 def discover_tables(base_dir: Path) -> list[str]:
@@ -128,13 +128,13 @@ def show_validation_interface(current_user):
         imgs = sorted([p.name for p in img_dir.glob("*.png")], key=natural_key)
         return imgs, tsv_dir
 
-    from app.reactions_db import (
+    from reactions_db import (
         DB_PATH as REACTIONS_DB_PATH,
     )
-    from app.reactions_db import (
+    from reactions_db import (
         canonicalize_source_path as _canon,
     )
-    from app.reactions_db import (
+    from reactions_db import (
         ensure_db,
         ensure_reaction_for_png,
         get_validation_meta_by_image,
@@ -419,7 +419,7 @@ def show_validation_interface(current_user):
     if desired_state is not None and desired_state != db_meta_checked:
         # Ensure reactions for this source are present; if not, import
         try:
-            from app.reactions_db import ensure_db
+            from reactions_db import ensure_db
 
             con = ensure_db()
 
@@ -436,7 +436,7 @@ def show_validation_interface(current_user):
                 if tno is not None:
                     if csv_file.exists():
                         try:
-                            from app.import_reactions import import_single_csv_idempotent
+                            from import_reactions import import_single_csv_idempotent
 
                             if debug_mode:
                                 st.sidebar.write(f"[DEBUG] Importing measurements from {csv_file}")
@@ -494,7 +494,7 @@ def show_validation_interface(current_user):
                 tsv2 = TSV_DIR / f"{stem2}.tsv"
                 src2 = csv2 if csv2.exists() else (tsv2 if tsv2.exists() else None)
                 if src2 is not None:
-                    from app.reactions_db import set_validated_by_source as _set_by_src
+                    from reactions_db import set_validated_by_source as _set_by_src
 
                     updated_src = _set_by_src(
                         con,
@@ -761,7 +761,7 @@ def show_validation_interface(current_user):
 
             # Automatically sync TSV to DB (idempotent), regardless of validation state
             try:
-                from app.import_reactions import (
+                from import_reactions import (
                     import_single_csv_idempotent as import_single_csv_idempotent_fn,
                 )
 

@@ -142,8 +142,8 @@ def main():
         import sys
 
         sys.path.insert(0, "/app")  # Ensure app is in path
-        from app.config import BASE_DIR
-        from app.reactions_db import DB_PATH
+        from config import BASE_DIR
+        from reactions_db import DB_PATH
 
         print(f"  BASE_DIR resolved to: {BASE_DIR}")
         print(f"  DB_PATH resolved to: {DB_PATH}")

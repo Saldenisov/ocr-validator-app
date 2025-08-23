@@ -3,7 +3,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from app.tsv_utils import fix_radical_dots
+from tsv_utils import fix_radical_dots
 
 
 def _strip_math_delims(s: str) -> str:
@@ -250,17 +250,20 @@ def escape_text_allow_ce(s: str) -> str:
     """
     # First, fix specific problematic chemical patterns
     # Fix bare chemical formulas like O_3^- to proper math mode
-    s = re.sub(r'\b([A-Z][a-z]?)(\d*)(_\d+)?(\^[-+])?(?=\W|$)(?![^$]*\$)', 
-               lambda m: f'${m.group(0)}$' if ('_' in m.group(0) or '^' in m.group(0)) else m.group(0), s)
-    
+    s = re.sub(
+        r"\b([A-Z][a-z]?)(\d*)(_\d+)?(\^[-+])?(?=\W|$)(?![^$]*\$)",
+        lambda m: f"${m.group(0)}$" if ("_" in m.group(0) or "^" in m.group(0)) else m.group(0),
+        s,
+    )
+
     # Fix specific cases
-    s = re.sub(r'\bO_3\^-\b(?![^$]*\$)', r'$O_3^{-}$', s)
-    s = re.sub(r'\bO_2\b(?=\$\))', r'O_2', s)  # Keep O_2 as is when followed by $)
-    s = re.sub(r'\bCO_3\^{2-}\b(?![^$]*\$)', r'$CO_3^{2-}$', s)
-    
+    s = re.sub(r"\bO_3\^-\b(?![^$]*\$)", r"$O_3^{-}$", s)
+    s = re.sub(r"\bO_2\b(?=\$\))", r"O_2", s)  # Keep O_2 as is when followed by $)
+    s = re.sub(r"\bCO_3\^{2-}\b(?![^$]*\$)", r"$CO_3^{2-}$", s)
+
     # Avoid merging fragmented math patterns to prevent nested $...$
     # Leave sequences like $k$(O$^{.-}$ + O$_2$) as-is (valid in LaTeX)
-    
+
     s = _normalize_inline_chem_to_ce(s)
     pieces = []
     for seg, is_raw in _split_preserve_math_and_ce(s):
@@ -327,7 +330,9 @@ def tsv_to_full_latex_article(tsv_path):
         ref_raw = row[6]
 
         # Heuristic: continuation rows often misplace pH into col[2] and shift others left
-        if (not (no_raw or name_raw)) and _pH_re.match(reaction_raw.strip() if reaction_raw else ""):
+        if (not (no_raw or name_raw)) and _pH_re.match(
+            reaction_raw.strip() if reaction_raw else ""
+        ):
             # Remap: col2->pH, col3->rate, col4->comments, col5->reference
             ph_raw = reaction_raw
             rate_raw = row[3]
@@ -336,7 +341,7 @@ def tsv_to_full_latex_article(tsv_path):
             reaction_raw = ""
 
         # Build reaction cell
-        if reaction_raw.strip() and re.search(r'[A-Za-z]|->|<-|<=>|\+', reaction_raw):
+        if reaction_raw.strip() and re.search(r"[A-Za-z]|->|<-|<=>|\+", reaction_raw):
             reaction_cell = _wrap_ce(reaction_raw)
         else:
             reaction_cell = "~"

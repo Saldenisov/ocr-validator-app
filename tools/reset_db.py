@@ -1,4 +1,4 @@
-from app.reactions_db import DB_PATH, SCHEMA_SQL, connect
+from reactions_db import DB_PATH, SCHEMA_SQL, connect
 
 
 def reset_db():

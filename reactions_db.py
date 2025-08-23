@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.config import BASE_DIR
+from config import BASE_DIR
 
 DB_PATH = BASE_DIR / "reactions.db"
 
@@ -869,7 +869,7 @@ def get_validation_statistics(con: sqlite3.Connection) -> dict[str, Any]:
 
     Optimized version uses bulk queries to reduce database load.
     """
-    from app.config import AVAILABLE_TABLES, get_table_paths
+    from config import AVAILABLE_TABLES, get_table_paths
 
     def table_images(table_name):
         img_dir, _, tsv_dir, _ = get_table_paths(table_name)

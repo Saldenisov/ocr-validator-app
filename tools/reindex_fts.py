@@ -1,4 +1,4 @@
-from app.reactions_db import ensure_db
+from reactions_db import ensure_db
 
 
 def rebuild_fts():

@@ -6,17 +6,17 @@ from typing import Any
 
 import streamlit as st
 
-# Ensure project root is on sys.path when running via Streamlit from app/
-ROOT = Path(__file__).resolve().parents[1]
+# Ensure project root is on sys.path
+ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from app.auth_db import (
+from auth_db import (
     auth_db,
     check_authentication,
     logout_user,
     show_user_profile_page,
 )
-from app.reactions_db import (
+from reactions_db import (
     ensure_db,
     get_reaction_with_measurements,
     get_validation_meta_by_source,
@@ -24,7 +24,7 @@ from app.reactions_db import (
     list_reactions,
     search_reactions,
 )
-from app.validate_embedded import show_validation_interface
+from validate_embedded import show_validation_interface
 
 st.set_page_config(page_title="Radical Reactions Platform (Buxton)", layout="wide")
 
@@ -54,8 +54,8 @@ print(f"[MAIN PAGE] Session state page_mode: {st.session_state.get('page_mode', 
 # Volume persistence diagnostics
 import os
 
-from app.config import BASE_DIR
-from app.reactions_db import DB_PATH
+from config import BASE_DIR
+from reactions_db import DB_PATH
 
 print(f"[VOLUME DEBUG] BASE_DIR resolved to: {BASE_DIR}")
 print(f"[VOLUME DEBUG] DB_PATH resolved to: {DB_PATH}")
@@ -152,7 +152,7 @@ if st.session_state.get("show_login", False) and not current_user:
             if username and password:
                 success, message = auth_db.authenticate_user(username, password)
                 if success:
-                    from app.auth_db import login_user
+                    from auth_db import login_user
 
                     login_user(username)
                     st.session_state.show_login = False
@@ -350,8 +350,8 @@ if current_user == "saldenisov":
             except Exception:
                 pass
             try:
-                from app.config import BASE_DIR
-                from app.tools.rebuild_db import build_db_offline_fast, swap_live_db
+                from config import BASE_DIR
+                from tools.rebuild_db import build_db_offline_fast, swap_live_db
 
                 build_path = BASE_DIR / "reactions_build.db"
                 # Build offline using fast path (validated entries only)
@@ -372,7 +372,7 @@ if current_user == "saldenisov":
                     )
                     time.sleep(0.5)
                     try:
-                        from app.tools.rebuild_db import rebuild_db_from_validations
+                        from tools.rebuild_db import rebuild_db_from_validations
 
                         rebuild_db_from_validations()
                         st.success("Database rebuilt successfully (after retry).")
@@ -422,7 +422,7 @@ if current_user == "saldenisov":
         ):
             log_event("Admin: Sync DB to JSON initiated")
             try:
-                from app.tools.rebuild_db import sync_db_validation_to_json_files
+                from tools.rebuild_db import sync_db_validation_to_json_files
 
                 sync_db_validation_to_json_files()
                 st.success("✅ Successfully synced database validation state to JSON files!")

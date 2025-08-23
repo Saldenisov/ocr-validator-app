@@ -3,8 +3,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.config import get_table_paths
-from app.reactions_db import (
+from config import get_table_paths
+from reactions_db import (
     add_measurement,
     ensure_db,
     get_or_create_reaction,
@@ -48,7 +48,7 @@ def import_single_csv(csv_path: Path, table_no: int):
         stem = csv_path.stem
         # Derive PNG path
         # Locate image dir from table number
-        from app.config import get_table_paths
+        from config import get_table_paths
 
         IMAGE_DIR, _, TSV_DIR, _ = get_table_paths(f"table{table_no}")
         png_path = IMAGE_DIR / f"{stem}.png"
@@ -81,7 +81,9 @@ def import_single_csv(csv_path: Path, table_no: int):
                 # Upsert a primary reference if a single code present; also store raw text
                 ref_id = upsert_reference(
                     con,
-                    buxton_code=references_field if references_field and "," not in references_field else None,
+                    buxton_code=references_field
+                    if references_field and "," not in references_field
+                    else None,
                     citation_text=None,
                     doi=None,
                     raw_text=references_field,
@@ -119,7 +121,7 @@ def import_single_csv_idempotent(csv_path: Path, table_no: int):
     inserted_reactions = 0
     replaced_measurements = 0
     try:
-        from app.config import get_table_paths
+        from config import get_table_paths
 
         stem = csv_path.stem
         IMAGE_DIR, _, TSV_DIR, _ = get_table_paths(f"table{table_no}")
@@ -168,7 +170,9 @@ def import_single_csv_idempotent(csv_path: Path, table_no: int):
 
             ref_id = upsert_reference(
                 con,
-                buxton_code=references_field if references_field and "," not in references_field else None,
+                buxton_code=references_field
+                if references_field and "," not in references_field
+                else None,
                 citation_text=None,
                 doi=None,
                 raw_text=references_field,
@@ -246,7 +250,9 @@ def import_from_csvs(base_dir: Path | None = None, table_numbers=(5, 6, 7, 8, 9)
                     references_field = row[6].strip() or None
                     ref_id = upsert_reference(
                         con,
-                        buxton_code=references_field if references_field and "," not in references_field else None,
+                        buxton_code=references_field
+                        if references_field and "," not in references_field
+                        else None,
                         citation_text=None,
                         doi=None,
                         raw_text=references_field,
@@ -297,7 +303,7 @@ def sync_validations_to_db(table_numbers=(5, 6, 7, 8, 9), dry_run: bool = False)
         if not DB_JSON_PATH.exists():
             continue
         try:
-            from app.db_utils import load_db
+            from db_utils import load_db
 
             db = load_db(DB_JSON_PATH, IMAGE_DIR)
         except Exception as e:
@@ -361,7 +367,7 @@ def sync_validations_to_db(table_numbers=(5, 6, 7, 8, 9), dry_run: bool = False)
                     )
                     continue
                 try:
-                    from app.reactions_db import set_validated_by_source
+                    from reactions_db import set_validated_by_source
 
                     updated = set_validated_by_source(con, str(source_path), True, by=by, at_iso=at)
                     if updated == 0:
@@ -388,7 +394,7 @@ def sync_validations_to_db(table_numbers=(5, 6, 7, 8, 9), dry_run: bool = False)
             else:
                 # Not validated: remove any existing entries from this source
                 try:
-                    from app.reactions_db import delete_reactions_by_source
+                    from reactions_db import delete_reactions_by_source
 
                     deleted = delete_reactions_by_source(con, str(source_path))
                     deleted_total += deleted

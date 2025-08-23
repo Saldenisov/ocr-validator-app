@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.config import AVAILABLE_TABLES, get_table_paths
-from app.db_utils import load_db
-from app.import_reactions import import_single_csv_idempotent
-from app.reactions_db import (
+from config import AVAILABLE_TABLES, get_table_paths
+from db_utils import load_db
+from import_reactions import import_single_csv_idempotent
+from reactions_db import (
     DB_PATH,
     ensure_db,
     get_validation_meta_by_source,

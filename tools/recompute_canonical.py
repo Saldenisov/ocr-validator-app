@@ -1,6 +1,6 @@
 import json
 
-from app.reactions_db import ensure_db, latex_to_canonical
+from reactions_db import ensure_db, latex_to_canonical
 
 
 def recompute_all():
