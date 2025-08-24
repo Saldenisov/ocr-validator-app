@@ -2,6 +2,7 @@ streamlit>=1.38.0
 pillow
 pymupdf
 python-dotenv
+pandas
 # database
 sqlite-utils
 # optional: scientific parsing
@@ -12,4 +13,3 @@ typing-extensions
 passlib[bcrypt]
 # dev
 ruff
-

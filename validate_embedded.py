@@ -39,12 +39,14 @@ def discover_tables(base_dir: Path) -> list[str]:
         return []
 
 
-# Try import fitz (PyMuPDF)
+# Try import fitz (PyMuPDF) - non-fatal, PDF features will be disabled if not available
 try:
     import fitz
+
+    HAS_FITZ = True
 except ImportError:
-    st.error("PyMuPDF is required. Install with `pip install PyMuPDF`.")
-    st.stop()
+    HAS_FITZ = False
+    fitz = None
 
 
 def is_lfs_pointer(p: Path) -> bool:
@@ -91,7 +93,6 @@ def show_validation_interface(current_user):
 
     st.sidebar.markdown("---")
 
-
     # Discover available tables dynamically from BASE_DIR; fall back to static list
     discovered = discover_tables(BASE_DIR)
     TABLES = discovered if discovered else AVAILABLE_TABLES
@@ -117,9 +118,6 @@ def show_validation_interface(current_user):
 
     from reactions_db import (
         DB_PATH as REACTIONS_DB_PATH,
-    )
-    from reactions_db import (
-        canonicalize_source_path as _canon,
     )
     from reactions_db import (
         ensure_db,
@@ -335,11 +333,9 @@ def show_validation_interface(current_user):
         current_image = images[0] if images else None
         st.session_state.selected_image = current_image
 
-
     # === Validation toggle (DB is the source of truth) ===
     # Read current status from DB for the selected image by PNG
     png_path = IMAGE_DIR / current_image
-
 
     db_meta_checked = False
     try:
@@ -645,16 +641,20 @@ def show_validation_interface(current_user):
         pdf_found = False
         for pdf_path in possible_pdf_paths:
             if pdf_path.exists():
-                try:
-                    doc = fitz.open(pdf_path)
-                    pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(3, 3))
-                    st.image(pix.tobytes(output="png"), use_container_width=True)
-                    st.caption(f"PDF source: {pdf_path.name}")
-                    pdf_found = True
+                if HAS_FITZ:
+                    try:
+                        doc = fitz.open(pdf_path)
+                        pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(3, 3))
+                        st.image(pix.tobytes(output="png"), use_container_width=True)
+                        st.caption(f"PDF source: {pdf_path.name}")
+                        pdf_found = True
+                        break
+                    except Exception as e:
+                        st.warning(f"Could not display PDF {pdf_path.name}: {e}")
+                        continue
+                else:
+                    st.warning("PDF display unavailable: PyMuPDF not installed")
                     break
-                except Exception as e:
-                    st.warning(f"Could not display PDF {pdf_path.name}: {e}")
-                    continue
 
         if not pdf_found:
             st.info(
@@ -663,75 +663,156 @@ def show_validation_interface(current_user):
 
     # === TSV TAB ===
     with tab2:
-        st.header("Edit TSV")
+        # Editor mode selection
+        editor_mode = st.radio(
+            "Choose editor mode:",
+            options=["📊 Table Editor (Excel-like)", "📝 Text Editor (Classic)"],
+            index=0,  # Default to table editor
+            horizontal=True,
+            help="Table editor provides Excel-like editing, Text editor shows raw TSV with arrows",
+        )
+
         # Use CSV files (tab-delimited)
         stem = Path(current_image).stem
         csv_file = TSV_DIR / f"{stem}.csv"
         tsv_path = csv_file  # Use CSV file for TSV operations
         tab_symbol = "→"
 
-        if csv_file.exists():
-            tsv_text = tsv_path.read_text(encoding="utf-8")
-        else:
-            tsv_text = ""
-            st.info("No CSV found yet for this image. You can create one and save.")
-
-        # Session state: show fixed/corrected TSV after saving
-        session_key = f"edited_visible_{current_image}"
-        if session_key not in st.session_state:
-            st.session_state[session_key] = tsv_to_visible(tsv_text, tab_symbol=tab_symbol)
-
-        edited_visible = st.text_area(
-            "TSV content",
-            value=st.session_state[session_key],
-            height=400,
-            key=f"tsv_text_area_{current_image}",
-        )
-
-        if st.button("Save and Recompile from TSV"):
-            # Write user edits as raw TSV, then apply correction and update text area
-            edited_tsv = visible_to_tsv(edited_visible, tab_symbol=tab_symbol)
-            tsv_path.write_text(edited_tsv, encoding="utf-8")
-            corrected_tsv_text = correct_tsv_file(tsv_path)
-            st.session_state[session_key] = tsv_to_visible(
-                corrected_tsv_text, tab_symbol=tab_symbol
-            )
-            tsv_text = corrected_tsv_text
-
-            # Recreate LaTeX from TSV and compile
-            latex_path = tsv_to_full_latex_article(tsv_path)
-            # Also update LaTeX editor content so it's in sync when switching tabs
-            latex_session_key = f"edited_latex_{current_image}"
+        if editor_mode == "📊 Table Editor (Excel-like)":
+            # Use simple editor (works without pandas)
+            data_changed = False
             try:
-                st.session_state[latex_session_key] = latex_path.read_text(encoding="utf-8")
-            except Exception:
-                pass
+                from simple_tsv_editor import show_simple_tsv_editor
 
-            returncode, out = compile_tex_to_pdf(latex_path)
-            if returncode != 0:
-                st.error(f"Compilation failed:\n{out}")
-            else:
-                st.success("Compiled and corrections applied!")
-                doc = fitz.open(latex_path.parent / (latex_path.stem + ".pdf"))
-                pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2))
-                st.image(pix.tobytes(output="png"), use_container_width=True)
-
-            # Automatically sync TSV to DB (idempotent), regardless of validation state
-            try:
-                from import_reactions import (
-                    import_single_csv_idempotent as import_single_csv_idempotent_fn,
-                )
-
-                tno = (
-                    int(table_choice.replace("table", ""))
-                    if table_choice.startswith("table")
-                    else None
-                )
-                if tno:
-                    rcount, mcount = import_single_csv_idempotent_fn(Path(tsv_path), tno)
-                    st.sidebar.info(f"TSV synced to DB: {mcount} measurements refreshed.")
+                data_changed, edited_data = show_simple_tsv_editor(tsv_path, current_image)
             except Exception as e:
-                st.sidebar.warning(f"Auto DB sync failed: {e}")
+                st.error(f"Table editor error: {e}")
+                st.info("Falling back to text editor...")
+                editor_mode = "📝 Text Editor (Classic)"
+                data_changed = False
+
+            # Only process changes if we're still in table editor mode
+            if editor_mode == "📊 Table Editor (Excel-like)" and data_changed:
+                # Apply TSV corrections to the saved file
+                try:
+                    corrected_tsv_text = correct_tsv_file(tsv_path)
+                    st.success("TSV corrections applied!")
+
+                    # Auto-generate LaTeX and compile
+                    latex_path = tsv_to_full_latex_article(tsv_path)
+                    latex_session_key = f"edited_latex_{current_image}"
+                    try:
+                        st.session_state[latex_session_key] = latex_path.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+
+                    returncode, out = compile_tex_to_pdf(latex_path)
+                    if returncode != 0:
+                        st.error(f"LaTeX compilation failed:\n{out}")
+                    else:
+                        st.success("LaTeX compiled successfully!")
+                        # Show compiled PDF preview
+                        if HAS_FITZ:
+                            try:
+                                doc = fitz.open(latex_path.parent / (latex_path.stem + ".pdf"))
+                                pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2))
+                                st.image(pix.tobytes(output="png"), use_container_width=True)
+                            except Exception as e:
+                                st.warning(f"Could not display PDF preview: {e}")
+                        else:
+                            st.warning("PDF preview unavailable: PyMuPDF not installed")
+
+                    # Auto-sync to DB
+                    try:
+                        from import_reactions import (
+                            import_single_csv_idempotent as import_single_csv_idempotent_fn,
+                        )
+
+                        tno = (
+                            int(table_choice.replace("table", ""))
+                            if table_choice.startswith("table")
+                            else None
+                        )
+                        if tno:
+                            rcount, mcount = import_single_csv_idempotent_fn(Path(tsv_path), tno)
+                            st.sidebar.info(f"TSV synced to DB: {mcount} measurements refreshed.")
+                    except Exception as e:
+                        st.sidebar.warning(f"Auto DB sync failed: {e}")
+
+                except Exception as e:
+                    st.error(f"Error applying corrections: {e}")
+
+        if editor_mode == "📝 Text Editor (Classic)":
+            # Original text editor implementation
+            if csv_file.exists():
+                tsv_text = tsv_path.read_text(encoding="utf-8")
+            else:
+                tsv_text = ""
+                st.info("No CSV found yet for this image. You can create one and save.")
+
+            # Session state: show fixed/corrected TSV after saving
+            session_key = f"edited_visible_{current_image}"
+            if session_key not in st.session_state:
+                st.session_state[session_key] = tsv_to_visible(tsv_text, tab_symbol=tab_symbol)
+
+            edited_visible = st.text_area(
+                "TSV content (arrows represent tabs)",
+                value=st.session_state[session_key],
+                height=400,
+                key=f"tsv_text_area_{current_image}",
+                help="Use arrows (→) to represent tab separators. Click 'Table Editor' above for Excel-like editing.",
+            )
+
+            if st.button("Save and Recompile from TSV"):
+                # Write user edits as raw TSV, then apply correction and update text area
+                edited_tsv = visible_to_tsv(edited_visible, tab_symbol=tab_symbol)
+                tsv_path.write_text(edited_tsv, encoding="utf-8")
+                corrected_tsv_text = correct_tsv_file(tsv_path)
+                st.session_state[session_key] = tsv_to_visible(
+                    corrected_tsv_text, tab_symbol=tab_symbol
+                )
+                tsv_text = corrected_tsv_text
+
+                # Recreate LaTeX from TSV and compile
+                latex_path = tsv_to_full_latex_article(tsv_path)
+                # Also update LaTeX editor content so it's in sync when switching tabs
+                latex_session_key = f"edited_latex_{current_image}"
+                try:
+                    st.session_state[latex_session_key] = latex_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+
+                returncode, out = compile_tex_to_pdf(latex_path)
+                if returncode != 0:
+                    st.error(f"Compilation failed:\n{out}")
+                else:
+                    st.success("Compiled and corrections applied!")
+                    if HAS_FITZ:
+                        try:
+                            doc = fitz.open(latex_path.parent / (latex_path.stem + ".pdf"))
+                            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2))
+                            st.image(pix.tobytes(output="png"), use_container_width=True)
+                        except Exception as e:
+                            st.warning(f"Could not display PDF preview: {e}")
+                    else:
+                        st.warning("PDF preview unavailable: PyMuPDF not installed")
+
+                # Automatically sync TSV to DB (idempotent), regardless of validation state
+                try:
+                    from import_reactions import (
+                        import_single_csv_idempotent as import_single_csv_idempotent_fn,
+                    )
+
+                    tno = (
+                        int(table_choice.replace("table", ""))
+                        if table_choice.startswith("table")
+                        else None
+                    )
+                    if tno:
+                        rcount, mcount = import_single_csv_idempotent_fn(Path(tsv_path), tno)
+                        st.sidebar.info(f"TSV synced to DB: {mcount} measurements refreshed.")
+                except Exception as e:
+                    st.sidebar.warning(f"Auto DB sync failed: {e}")
 
     # === LaTeX TAB ===
     with tab3:
@@ -797,6 +878,12 @@ def show_validation_interface(current_user):
                         st.success("Compiled LaTeX successfully!")
                         pdf_file = latex_path.parent / (latex_path.stem + ".pdf")
                         if pdf_file.exists():
-                            doc = fitz.open(pdf_file)
-                            pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2))
-                            st.image(pix.tobytes(output="png"), use_container_width=True)
+                            if HAS_FITZ:
+                                try:
+                                    doc = fitz.open(pdf_file)
+                                    pix = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2))
+                                    st.image(pix.tobytes(output="png"), use_container_width=True)
+                                except Exception as e:
+                                    st.warning(f"Could not display PDF preview: {e}")
+                            else:
+                                st.warning("PDF preview unavailable: PyMuPDF not installed")
